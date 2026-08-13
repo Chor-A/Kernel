@@ -102,11 +102,23 @@ jobs:
               exit 0
           fi
 
-          echo "=> Scanning for old KSU..."
-          rm -rf fs/kernelsu drivers/kernelsu KernelSU || true
-          echo "=> Injecting KernelSU-Next..."
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash - || true
+          # 1. Complete KSU Purge & Proper KSUN Inject (Fixing Makefile clean reference error)
+          echo "=> Purging old KSU remnants..."
+          rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
+          
+          echo "=> Injecting KernelSU-Next properly..."
+          git clone https://github.com/rifsxd/KernelSU-Next.git -b next /tmp/KSUN
+          if [ -d "fs" ]; then
+              mkdir -p fs/kernelsu
+              cp -rf /tmp/KSUN/kernel/* fs/kernelsu/
+              if [ -f "fs/kernelsu/setup.sh" ]; then
+                  cd fs/kernelsu && bash setup.sh || true
+                  cd - >/dev/null
+              fi
+          fi
+          rm -rf drivers/kernelsu || true
 
+          # 2. Dynamic Patches (BBRv3, SUSFS)
           echo "=> Attempting Dynamic Patch Pulls..."
           if ! grep -q 'config TCP_CONG_BBR3' net/ipv4/Kconfig 2>/dev/null; then
               echo "=> Fetching BBRv3 patches..."
@@ -120,6 +132,7 @@ jobs:
               cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
           fi
 
+          # 3. Smart Config Injector
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
           touch $FRAG
@@ -188,7 +201,6 @@ jobs:
 
       - name: Build kernel
         env:
-          # 🔥 Reverted to the native repository link! Will work perfectly after running publish-prebuilts.
           KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
         run: |
           ksu_pid=""
@@ -235,7 +247,7 @@ jobs:
 
       - name: Upload flashable zip
         if: ${{ inputs.pack_flashable && !inputs.publish_release }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload_artifact@v5
         with:
           name: kernel-flash-zip
           path: work/pkg/cloudfox-kernel-flash.zip
