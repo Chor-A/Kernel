@@ -61,7 +61,7 @@ jobs:
       - name: Already released?
         id: released
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           names=$(gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' 2>/dev/null || true)
           echo "assets: $names"
@@ -81,9 +81,6 @@ jobs:
         if: steps.released.outputs.wanted != 'nothing to do'
         run: |
           set -euo pipefail
-          # The three prebuilts clone from googlesource.com independently and
-          # are network-bound, so fetch them concurrently instead of one step
-          # at a time. Each skips when its asset is already released.
           fetch_clang() {
             if [ "$FORCE" != "1" ] && ! grep -qx "$CLANG_ASSET" /tmp/wanted; then
               echo "clang already released, skipping"
@@ -145,11 +142,8 @@ jobs:
 
       - name: Publish release (uploads only on-disk assets)
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # The fetch step only materializes *.tar.zst files for assets that
-          # are missing from the release, so the on-disk set IS the set to
-          # upload: no second release-asset query needed.
           assets=()
           for f in *.tar.zst; do
             [ -f "$f" ] && assets+=("$f")
@@ -158,12 +152,10 @@ jobs:
             echo "no assets to upload"
             exit 0
           fi
-          # Ensure the release exists, tolerating the parallel kernelsu job
-          # creating it concurrently (both jobs run on the same dispatch).
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --latest=false \
               --title "Kernel build prebuilts" \
-              --notes "Prebuilt components consumed by build-kernel.sh, fetched from the Google ACK sources (clang, kernel-build-tools and build-tools; clang version configurable via workflow dropdown, default clang 19, bundled under a legacy directory name so pinned build scripts resolve it). The Google build scripts and gcc host sysroot are shipped in the repository itself." \
+              --notes "Prebuilt components consumed by build-kernel.sh..." \
               "${assets[@]}" >/dev/null 2>&1 || true
           fi
           gh release upload "$RELEASE_TAG" --clobber "${assets[@]}"
@@ -174,12 +166,15 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
       FORCE: ${{ inputs.force && '1' || '0' }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Mirror ksud binaries from upstream Actions run
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ "$FORCE" != "1" ]; then
@@ -198,13 +193,14 @@ jobs:
 
       - name: Publish ksu assets to prebuilts release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --latest=false \
               --title "Kernel build prebuilts" \
-              --notes "Prebuilt components consumed by build-kernel.sh and the build-kernel workflow: clang toolchain, kernel-build-tools, build-tools and mirrored ksud binaries (arm64/armv7) that replace the kernel on device." || true
+              --notes "Prebuilt components consumed by build-kernel.sh and the build-kernel workflow..." || true
           fi
           assets=()
           for f in ksu-assets/ksu-*.zip; do
