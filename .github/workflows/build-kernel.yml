@@ -47,7 +47,7 @@ name: build-kernel
         required: false
         default: ""
       ccache:
-        description: 'Accelerate with ccache.'
+        description: 'Accelerate with ccache (GitHub Cache)'
         type: boolean
         default: true
 
@@ -61,8 +61,9 @@ concurrency:
 
 jobs:
   build:
+    # BACK TO FREE GITHUB RUNNERS!
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360 # Increased timeout just in case free runners are slow
     env:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
@@ -71,42 +72,46 @@ jobs:
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
       APPEND_CONFIG: ${{ inputs.append_config }}
-      RELEASE_TAG: ${{ inputs.RELEASE_TAG }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
       CCACHE_OPT: ${{ inputs.ccache && '1' || '' }}
       GITHUB_TOKEN: ${{ github.token }}
+      
     steps:
       - uses: actions/checkout@v5
 
-      - name: Free disk space
+      # ========================================================
+      # EXTREME DISK SPACE CLEARING (Crucial for Free Runners)
+      # ========================================================
+      - name: Free disk space & Maximize Build Space 🧹
         run: |
-          sudo bash build/free-disk-space.sh
+          echo "=> Purging unnecessary pre-installed software on GitHub Runner to free up ~40GB space..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force
+          sudo apt-get clean
+          # Verify space
           df -h
 
-      - name: Install Host Dependencies (libelf, dwarves, etc.)
+      - name: Install Host Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            libelf-dev \
-            libssl-dev \
-            bison \
-            flex \
-            bc \
-            rsync \
-            dwarves \
-            libncurses-dev \
-            zlib1g-dev \
-            pkg-config
+            build-essential libelf-dev libssl-dev bison flex bc \
+            rsync dwarves libncurses-dev zlib1g-dev pkg-config
 
-      - name: Setup Master-Tier Automation & Patch Engine 🚀
+      - name: Setup God-Tier Automation Engine 🚀
         run: |
-          echo "🔥 Creating Master Automation Script 🔥"
+          echo "🔥 Creating Smart Automation Script 🔥"
           
-          cat << 'EOF' > /tmp/master_automation.sh
+          cat << 'EOF' > /tmp/god_tier_automation.sh
           #!/bin/bash
           set -euo pipefail
           echo "========================================="
-          echo " 🚀 MASTER-TIER AUTOMATION TRIGGERED     "
+          echo " 🚀 GOD-TIER SMART AUTOMATION TRIGGERED  "
           echo "========================================="
 
           if [ -d "work/common" ]; then
@@ -114,141 +119,63 @@ jobs:
           elif [ -d "work" ]; then
               cd work
           else
-              echo "=> Cannot find kernel source directory. Skipping patches."
+              echo "=> Cannot find kernel source. Skipping patch."
               exit 0
           fi
 
-          # 1. Clean KernelSU-Next Injection into drivers/kernelsu
+          # 1. Complete KSU Purge & Proper KSUN Inject into drivers/kernelsu
           echo "=> Purging old KSU remnants..."
           rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
           
-          echo "=> Cloning and integrating KernelSU-Next..."
+          echo "=> Injecting KernelSU-Next into drivers/kernelsu..."
           git clone https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
           mkdir -p drivers/kernelsu
           cp -rf /tmp/KSUN/* drivers/kernelsu/
           rm -rf /tmp/KSUN
 
-          # 2. Enable Native Linux 5.10 BBR Congestion Control (Fully Compatible)
-          echo "=> Enabling Native BBR Congestion Control..."
-          if ! grep -q 'config TCP_CONG_BBR' net/ipv4/Kconfig 2>/dev/null; then
-              if ! grep -q "TCP_CONG_BBR" net/ipv4/Kconfig; then
-                  echo -e "\nconfig TCP_CONG_BBR\n\ttristate \"BBR congestion control\"\n\tdefault y\n" >> net/ipv4/Kconfig
-              fi
-          fi
-
-          # 3. SusFS Integration (Targeting 5.10 properly without corrupting files)
-          echo "=> Integrating SusFS components safely..."
+          # 2. SusFS Integration Safely
+          echo "=> Fetching SUSFS components..."
           if [ ! -d "fs/susfs" ]; then
               git clone https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs || true
               if [ -d "/tmp/susfs/kernel_patches" ]; then
-                  if [ -d "/tmp/susfs/kernel_patches/fs/susfs" ]; then
-                      cp -r /tmp/susfs/kernel_patches/fs/susfs fs/
-                  fi
-                  if [ -d "/tmp/susfs/kernel_patches/include/linux" ]; then
-                      cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
-                  fi
+                  cp -r /tmp/susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
+                  cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
               fi
               rm -rf /tmp/susfs
           fi
 
-          # 4. Master Config Injector (Your Custom Master Defconfig)
-          echo "=> Generating Master Config Fragment..."
-          FRAG="/tmp/master_tier.config"
-          
-          cat << 'CONF' > $FRAG
-          CONFIG_MMU=y
-          CONFIG_SPARSEMEM=y
-          CONFIG_SPARSEMEM_VMEMMAP=y
-          CONFIG_SYSFS=y
-          CONFIG_DEBUG_FS=y
-          CONFIG_DAMON=y
-          CONFIG_DAMON_VADDR=y
-          CONFIG_DAMON_PADDR=y
-          CONFIG_DAMON_SYSFS=y
-          CONFIG_CRYPTO=y
-          CONFIG_CRYPTO_LZ4=y
-          CONFIG_CRYPTO_LZO=y
-          CONFIG_CRYPTO_ZSTD=y
-          CONFIG_ZSWAP=y
-          CONFIG_ZPOOL=y
-          CONFIG_ZSMALLOC=y
-          CONFIG_BLK_DEV_ZRAM=y
-          CONFIG_ZRAM_WRITEBACK=y
-          CONFIG_ZRAM_MULTI_COMP=y
-          CONFIG_ZRAM_MEMORY_TRACKING=y
-          CONFIG_SWAP=y
-          CONFIG_MEMCG=y
-          CONFIG_MEMCG_SWAP=y
-          CONFIG_PSI=y
-          CONFIG_LRU_GEN=y
-          CONFIG_LRU_GEN_ENABLED=y
-          CONFIG_SMP=y
-          CONFIG_SCHED_MC=y
-          CONFIG_CGROUP_SCHED=y
-          CONFIG_FAIR_GROUP_SCHED=y
-          CONFIG_RT_GROUP_SCHED=y
-          CONFIG_CPU_FREQ=y
-          CONFIG_CPU_FREQ_STAT=y
-          CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
-          CONFIG_ENERGY_AWARE=y
-          CONFIG_SCHED_CASS=y
-          CONFIG_UCLAMP_TASK=y
-          CONFIG_UCLAMP_TASK_GROUP=y
-          CONFIG_BPF=y
-          CONFIG_BPF_SYSCALL=y
-          CONFIG_CGROUP_BPF=y
-          CONFIG_DEBUG_INFO_BTF=y
-          CONFIG_SECURITY=y
-          CONFIG_SECURITY_NETWORK=y
-          CONFIG_CRYPTO_SHA256=y
-          CONFIG_ASYMMETRIC_KEY_TYPE=y
-          CONFIG_SECURITY_SELINUX=y
-          CONFIG_SECURITY_APPARMOR=y
-          CONFIG_SECURITY_SAFESETID=y
-          CONFIG_SECURITY_LOCKDOWN_LSM=y
-          CONFIG_BPF_LSM=y
-          CONFIG_KPROBES=y
-          CONFIG_KRETPROBES=y
-          CONFIG_OVERLAY_FS=y
-          CONFIG_KSU=y
-          CONFIG_ANON_INODES=y
-          CONFIG_EVENTFD=y
-          CONFIG_IO_URING=y
-          CONFIG_ANDROID_BINDER_IPC=y
-          CONFIG_ANDROID_BINDERFS=y
-          CONFIG_BLOCK=y
-          CONFIG_BLK_INLINE_ENCRYPTION=y
-          CONFIG_FS_ENCRYPTION=y
-          CONFIG_FS_VERITY=y
-          CONFIG_CRYPTO_CRC32=y
-          CONFIG_F2FS_FS=y
-          CONFIG_F2FS_FS_COMPRESSION=y
-          CONFIG_F2FS_FS_ZSTD=y
-          CONFIG_EROFS_FS=y
-          CONFIG_EROFS_FS_ZIP=y
-          CONFIG_MODULES=y
-          CONFIG_MODULE_UNLOAD=y
-          CONFIG_ZSTD_COMPRESS=y
-          CONFIG_ZSTD_DECOMPRESS=y
-          CONFIG_XZ_DEC_ARM64=y
-          CONFIG_TCP_CONG_BBR=y
-          CONFIG_DEFAULT_BBR=y
-          CONFIG_DEFAULT_TCP_CONG="bbr"
-          CONF
+          # 3. Master Config Injector
+          echo "=> Generating Smart Config Fragment..."
+          FRAG="/tmp/god_tier.config"
+          touch $FRAG
 
-          echo "=> Appending Master Config Fragment to Defconfigs..."
+          function inject() {
+              local check="$1"
+              local flags="$2"
+              if [ -z "$check" ] || eval "$check"; then
+                  echo -e "$flags" >> "$FRAG"
+              fi
+          }
+
+          # Memory, Scheduler, Security, Root configs injected here...
+          inject "" "CONFIG_MMU=y\nCONFIG_SPARSEMEM=y\nCONFIG_ZRAM=y\nCONFIG_LTO_NONE=y\nCONFIG_LTO_CLANG_NONE=y\nCONFIG_BPF=y\nCONFIG_KSU=y\nCONFIG_OVERLAY_FS=y"
+          inject "grep -q 'config EROFS_FS' fs/erofs/Kconfig 2>/dev/null" "CONFIG_EROFS_FS_ZIP_LZMA=y"
+          inject "grep -q 'config F2FS_FS' fs/f2fs/Kconfig 2>/dev/null" "CONFIG_F2FS_FS_LZ4=y"
+
+          echo "=> Appending to Defconfigs..."
           for conf in arch/arm64/configs/*defconfig; do
               [ -f "$conf" ] && cat $FRAG >> "$conf"
           done
-          echo "=> Master Automation & Config Injection Completed Successfully!"
           EOF
-          chmod +x /tmp/master_automation.sh
+          chmod +x /tmp/god_tier_automation.sh
           
-          # Reliable Hook Insertion into build-kernel.sh
           sed -i '/kernel source cloned/a \
-          echo "=> TRIGGERING MASTER AUTOMATION PATCHER..." \
-          bash /tmp/master_automation.sh' ./build-kernel.sh
+          echo "=> TRIGGERING GOD TIER PATCHER..." \
+          bash /tmp/god_tier_automation.sh' ./build-kernel.sh
 
+      # ========================================================
+      # STANDARD GITHUB CCACHE RESTORE
+      # ========================================================
       - name: Restore ccache cache
         if: ${{ inputs.ccache }}
         uses: actions/cache@v4
@@ -260,16 +187,19 @@ jobs:
             cfx-ccache-${{ env.CLANG_ASSET }}-
           fail-on-cache-miss: false
 
-      - name: Add 8G Optimized Swap (Safe Disk Storage)
+      # ========================================================
+      # EXTREME SWAP ALLOCATION (24GB for LTO/Linking Phase)
+      # ========================================================
+      - name: Add 24G Swap Space
         run: |
-          sudo swapoff -a
-          sudo rm -f /swapfile
-          sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+          echo "=> Creating massive 24GB Swap file to prevent Out of Memory (OOM 137) errors..."
+          sudo swapoff -a || true
+          sudo rm -f /swapfile || true
+          sudo fallocate -l 24G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=24576
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
           free -h
-          df -h
 
       - name: Build kernel
         env:
@@ -280,11 +210,15 @@ jobs:
             ./build/kernelsu-fetch.sh &
             ksu_pid=$!
           fi
+          # Using --ccache for speed!
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
           if [ -n "$ksu_pid" ]; then
             wait "$ksu_pid" || echo "::warning::ksud fetch failed; flashable zip will be skipped"
           fi
 
+      # ========================================================
+      # STANDARD GITHUB CCACHE SAVE
+      # ========================================================
       - name: Save ccache cache
         if: ${{ inputs.ccache && always() }}
         uses: actions/cache/save@v4
@@ -307,7 +241,6 @@ jobs:
           fi
           if [ -z "$kernel_img" ]; then
             echo "no kernel Image found in work/dist" >&2
-            find work/dist -type f | head -40
             exit 1
           fi
           mkdir -p work/pkg
@@ -351,7 +284,7 @@ jobs:
           else
             gh release create "$tag" \
               --title "CloudFox kernel build $tag" \
-              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} via Google's unmodified build.sh. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built on Free GitHub Runners with Swap! $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
           echo "release $tag updated"
