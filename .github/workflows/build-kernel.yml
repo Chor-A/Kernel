@@ -247,7 +247,7 @@ jobs:
 
       - name: Upload flashable zip
         if: ${{ inputs.pack_flashable && !inputs.publish_release }}
-        uses: actions/upload_artifact@v5
+        uses: actions/upload-artifact@v5
         with:
           name: kernel-flash-zip
           path: work/pkg/cloudfox-kernel-flash.zip
