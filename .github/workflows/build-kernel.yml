@@ -84,15 +84,25 @@ jobs:
 
       - name: Setup God-Tier Automation Engine 🚀
         run: |
-          echo "🔥 Injecting Smart Automation & Config Patcher 🔥"
+          echo "🔥 Creating Smart Automation Script 🔥"
           
-          # Write the Smart Script that will run INSIDE the kernel source directory
+          # We write the script to /tmp so it can be called exactly when the source is ready
           cat << 'EOF' > /tmp/god_tier_automation.sh
           #!/bin/bash
           set -euo pipefail
           echo "========================================="
           echo " 🚀 GOD-TIER SMART AUTOMATION TRIGGERED  "
           echo "========================================="
+
+          # Move into the downloaded kernel source directory
+          if [ -d "work/common" ]; then
+              cd work/common
+          elif [ -d "work" ]; then
+              cd work
+          else
+              echo "=> Cannot find kernel source. Skipping patch."
+              exit 0
+          fi
 
           # 1. KSU Purge & KSUN Inject
           echo "=> Scanning for old KSU..."
@@ -104,7 +114,6 @@ jobs:
           echo "=> Attempting Dynamic Patch Pulls..."
           if ! grep -q 'config TCP_CONG_BBR3' net/ipv4/Kconfig 2>/dev/null; then
               echo "=> Fetching BBRv3 patches..."
-              # Placeholder fetch for BBR3 (graceful fail if mismatched)
               wget -qO bbr3.patch "https://raw.githubusercontent.com/google/bbr/v3/net/ipv4/tcp_bbr.c" || true
           fi
           
@@ -125,9 +134,6 @@ jobs:
               local flags="$2"
               if [ -z "$check" ] || eval "$check"; then
                   echo -e "$flags" >> "$FRAG"
-                  echo "   [INJECTED] -> Trigger: ${check:-Unconditional}"
-              else
-                  echo "   [SKIPPED] -> Missing Source: $check"
               fi
           }
 
@@ -155,15 +161,18 @@ jobs:
           inject "test -d fs/kernelsu" "CONFIG_KSU=y\nCONFIG_KPROBES=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
           inject "grep -q 'config BASEBAND_GUARD' security/Kconfig 2>/dev/null" "CONFIG_BASEBAND_GUARD=y"
 
-          echo "=> Searching and Appending to Defconfigs..."
+          echo "=> Appending to Defconfigs..."
           for conf in arch/arm64/configs/*defconfig; do
               [ -f "$conf" ] && cat $FRAG >> "$conf"
           done
           EOF
           chmod +x /tmp/god_tier_automation.sh
           
-          # Inject the script hook directly into build-kernel.sh so it runs inside the environment
-          sed -i '2i export PRE_DEFCONFIG_CMDS="bash /tmp/god_tier_automation.sh"' ./build-kernel.sh
+          # 🔥 THE 100% BULLETPROOF HOOK 🔥
+          # Injecting the execution EXACTLY after the source is downloaded inside build-kernel.sh
+          sed -i '/kernel source cloned/a \
+          echo "=> TRIGGERING GOD TIER PATCHER..." \
+          bash /tmp/god_tier_automation.sh' ./build-kernel.sh
 
       - name: Restore ccache cache
         if: ${{ inputs.ccache }}
@@ -188,7 +197,8 @@ jobs:
 
       - name: Build kernel
         env:
-          KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
+          # 🔥 FIX: Forced to download the heavy prebuilts directly from the CloudFox Master Repo
+          KSU_PREBUILT_BASE: https://github.com/CloudFox-INC/CloudFox-Kernel-Builder/releases/download/prebuilts
         run: |
           ksu_pid=""
           if [ "${{ inputs.pack_flashable }}" == "true" ]; then
