@@ -86,7 +86,6 @@ jobs:
         run: |
           echo "🔥 Creating Smart Automation Script 🔥"
           
-          # We write the script to /tmp so it can be called exactly when the source is ready
           cat << 'EOF' > /tmp/god_tier_automation.sh
           #!/bin/bash
           set -euo pipefail
@@ -94,7 +93,6 @@ jobs:
           echo " 🚀 GOD-TIER SMART AUTOMATION TRIGGERED  "
           echo "========================================="
 
-          # Move into the downloaded kernel source directory
           if [ -d "work/common" ]; then
               cd work/common
           elif [ -d "work" ]; then
@@ -104,13 +102,11 @@ jobs:
               exit 0
           fi
 
-          # 1. KSU Purge & KSUN Inject
           echo "=> Scanning for old KSU..."
           rm -rf fs/kernelsu drivers/kernelsu KernelSU || true
           echo "=> Injecting KernelSU-Next..."
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash - || true
 
-          # 2. Dynamic Patches (BBRv3, SUSFS)
           echo "=> Attempting Dynamic Patch Pulls..."
           if ! grep -q 'config TCP_CONG_BBR3' net/ipv4/Kconfig 2>/dev/null; then
               echo "=> Fetching BBRv3 patches..."
@@ -124,7 +120,6 @@ jobs:
               cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
           fi
 
-          # 3. Smart Config Injector
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
           touch $FRAG
@@ -137,7 +132,6 @@ jobs:
               fi
           }
 
-          # Unconditional Core & Performance Flags
           inject "" "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_BLOCK=y\nCONFIG_DEBUG_FS=y\nCONFIG_DEVTMPFS=y"
           inject "" "CONFIG_SYSVIPC=y\nCONFIG_POSIX_MQUEUE=y\nCONFIG_IPC_NS=y\nCONFIG_PID_NS=y\nCONFIG_USER_NS=y"
           inject "" "CONFIG_PSI=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y\nCONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y"
@@ -149,7 +143,6 @@ jobs:
           inject "" "CONFIG_OVERLAY_FS=y\nCONFIG_MSDOS_FS=y\nCONFIG_VIRTIO_FS=y\nCONFIG_INCREMENTAL_FS=y\nCONFIG_FUSE_FS=y\nCONFIG_FUSE_BPF=y"
           inject "" "CONFIG_LZ4_DECOMPRESS=y\nCONFIG_LZ4HC_DECOMPRESS=y\nCONFIG_XZ_DEC=y\nCONFIG_XZ_DEC_ARM=y\nCONFIG_XZ_DEC_ARMTHUMB=y\nCONFIG_XZ_DEC_BCJ=y\nCONFIG_ZLIB_INFLATE=y\nCONFIG_CRYPTO_DECOMPRESS=y\nCONFIG_BUFFER_HEAD=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y"
 
-          # Smart Conditional Flags
           inject "grep -q 'config EROFS_FS' fs/erofs/Kconfig 2>/dev/null" "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT=1\nCONFIG_EROFS_FS_XATTR=y\nCONFIG_EROFS_FS_POSIX_ACL=y\nCONFIG_EROFS_FS_SECURITY=y\nCONFIG_EROFS_FS_ZIP_LZMA=y\nCONFIG_EROFS_FS_ZIP_DEFLATE=y\nCONFIG_EROFS_FS_ZIP_ACCEL=y\nCONFIG_EROFS_FS_ONDEMAND=y"
           inject "grep -q 'config F2FS_FS' fs/f2fs/Kconfig 2>/dev/null" "CONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_LZ4=y\nCONFIG_F2FS_FS_LZ4HC=y\nCONFIG_F2FS_FS_LZO=y\nCONFIG_F2FS_FS_LZORLE=y\nCONFIG_F2FS_FS_ZSTD=y"
           inject "test -d mm/damon" "CONFIG_DAMON=y\nCONFIG_DAMON_VADDR=y\nCONFIG_DAMON_PADDR=y\nCONFIG_DAMON_SYSFS=y\nCONFIG_DAMON_RECLAIM=y"
@@ -168,8 +161,6 @@ jobs:
           EOF
           chmod +x /tmp/god_tier_automation.sh
           
-          # 🔥 THE 100% BULLETPROOF HOOK 🔥
-          # Injecting the execution EXACTLY after the source is downloaded inside build-kernel.sh
           sed -i '/kernel source cloned/a \
           echo "=> TRIGGERING GOD TIER PATCHER..." \
           bash /tmp/god_tier_automation.sh' ./build-kernel.sh
@@ -197,8 +188,8 @@ jobs:
 
       - name: Build kernel
         env:
-          # 🔥 FIX: Forced to download the heavy prebuilts directly from the CloudFox Master Repo
-          KSU_PREBUILT_BASE: https://github.com/CloudFox-INC/CloudFox-Kernel-Builder/releases/download/prebuilts
+          # 🔥 Reverted to the native repository link! Will work perfectly after running publish-prebuilts.
+          KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
         run: |
           ksu_pid=""
           if [ "${{ inputs.pack_flashable }}" == "true" ]; then
