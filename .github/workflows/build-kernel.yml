@@ -66,7 +66,7 @@ jobs:
     env:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
-      KERNEL_COMMIT: ${{ inputs.kernel_commit }}
+      KERNEL_COMMIT: ${{ inputs.KERNEL_COMMIT }}
       CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst"}')[inputs.clang_version] }}
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
@@ -89,7 +89,7 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install Host Dependencies (libelf, dwarves, coreutils, etc.)
+      - name: Install Host Dependencies & Fix Utilities (dd, coreutils, etc.)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -105,6 +105,9 @@ jobs:
             libncurses-dev \
             zlib1g-dev \
             pkg-config
+          # Force link dd into standard bin paths to satisfy kernel build scripts
+          sudo ln -sf /usr/bin/dd /bin/dd
+          sudo ln -sf /usr/bin/printf /bin/printf
 
       - name: Setup God-Tier Automation Engine 🚀
         run: |
@@ -147,7 +150,7 @@ jobs:
               rm -rf /tmp/susfs
           fi
 
-          # 3. Master Config Injector (All Master Flags + Custom Tweaks + BTF & LTO safeguards)
+          # 3. Master Config Injector
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
           touch $FRAG
@@ -163,7 +166,7 @@ jobs:
           # --- 1. RAM, ZRAM & MEMORY MANAGEMENT (MM) ---
           inject "" "CONFIG_MMU=y\nCONFIG_SPARSEMEM=y\nCONFIG_SPARSEMEM_VMEMMAP=y\nCONFIG_SYSFS=y\nCONFIG_DEBUG_FS=y\nCONFIG_DAMON=y\nCONFIG_DAMON_VADDR=y\nCONFIG_DAMON_PADDR=y\nCONFIG_DAMON_SYSFS=y\nCONFIG_CRYPTO=y\nCONFIG_CRYPTO_LZ4=y\nCONFIG_CRYPTO_LZO=y\nCONFIG_CRYPTO_ZSTD=y\nCONFIG_ZSWAP=y\nCONFIG_ZPOOL=y\nCONFIG_ZSMALLOC=y\nCONFIG_BLK_DEV_ZRAM=y\nCONFIG_ZRAM_WRITEBACK=y\nCONFIG_ZRAM_MULTI_COMP=y\nCONFIG_ZRAM_MEMORY_TRACKING=y\nCONFIG_SWAP=y\nCONFIG_MEMCG=y\nCONFIG_MEMCG_SWAP=y\nCONFIG_PSI=y\nCONFIG_VM_CLEAN_LOW_KBYTES=y\nCONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y"
 
-          # --- 2. CPU SCHEDULER, CASS & PERFORMANCE (LTO_NONE prevents runner crash) ---
+          # --- 2. CPU SCHEDULER, CASS & PERFORMANCE ---
           inject "" "CONFIG_LTO_NONE=y\nCONFIG_LTO_CLANG_NONE=y\nCONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
 
           # --- 3. SECURITY, BPF & LSM ---
@@ -175,7 +178,7 @@ jobs:
           # --- 5. FILESYSTEMS & STORAGE ---
           inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y"
 
-          # --- 6. EXTRA/VENDOR TWEAKS (Standard BBR, LZ4KDR, Kyber, Droidspace) ---
+          # --- 6. EXTRA/VENDOR TWEAKS ---
           inject "" "CONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\""
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
           inject "grep -q 'config MQ_IOSCHED_KYBER' block/Kconfig.iosched 2>/dev/null" "CONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DEFAULT_KYBER=y\nCONFIG_DEFAULT_IOSCHED=\"kyber\""
