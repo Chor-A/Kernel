@@ -80,7 +80,7 @@ jobs:
       - name: Free disk space & Maximize Build Space 🧹
         run: |
           sudo bash build/free-disk-space.sh
-          echo "=> Purging unnecessary pre-installed software to free up space for 24GB Swap..."
+          echo "=> Purging unnecessary pre-installed software to free up space..."
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
@@ -89,12 +89,22 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install Host Dependencies (libelf, dwarves, etc.)
+      - name: Install Host Dependencies (libelf, dwarves, coreutils, etc.)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential libelf-dev libssl-dev bison flex bc \
-            rsync dwarves libncurses-dev zlib1g-dev pkg-config
+            build-essential \
+            libelf-dev \
+            libssl-dev \
+            bison \
+            flex \
+            bc \
+            rsync \
+            dwarves \
+            coreutils \
+            libncurses-dev \
+            zlib1g-dev \
+            pkg-config
 
       - name: Setup God-Tier Automation Engine 🚀
         run: |
@@ -137,7 +147,7 @@ jobs:
               rm -rf /tmp/susfs
           fi
 
-          # 3. Master Config Injector (MERGING NEW MASTER FLAGS + OLD SAFE CHECKS)
+          # 3. Master Config Injector (All Master Flags + Custom Tweaks + BTF & LTO safeguards)
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
           touch $FRAG
@@ -153,8 +163,8 @@ jobs:
           # --- 1. RAM, ZRAM & MEMORY MANAGEMENT (MM) ---
           inject "" "CONFIG_MMU=y\nCONFIG_SPARSEMEM=y\nCONFIG_SPARSEMEM_VMEMMAP=y\nCONFIG_SYSFS=y\nCONFIG_DEBUG_FS=y\nCONFIG_DAMON=y\nCONFIG_DAMON_VADDR=y\nCONFIG_DAMON_PADDR=y\nCONFIG_DAMON_SYSFS=y\nCONFIG_CRYPTO=y\nCONFIG_CRYPTO_LZ4=y\nCONFIG_CRYPTO_LZO=y\nCONFIG_CRYPTO_ZSTD=y\nCONFIG_ZSWAP=y\nCONFIG_ZPOOL=y\nCONFIG_ZSMALLOC=y\nCONFIG_BLK_DEV_ZRAM=y\nCONFIG_ZRAM_WRITEBACK=y\nCONFIG_ZRAM_MULTI_COMP=y\nCONFIG_ZRAM_MEMORY_TRACKING=y\nCONFIG_SWAP=y\nCONFIG_MEMCG=y\nCONFIG_MEMCG_SWAP=y\nCONFIG_PSI=y\nCONFIG_VM_CLEAN_LOW_KBYTES=y\nCONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y"
 
-          # --- 2. CPU SCHEDULER, CASS & PERFORMANCE (LTO_NONE prevents Out Of Memory) ---
-          inject "" "CONFIG_LTO_NONE=y\nCONFIG_LTO_CLANG_NONE=y\nCONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y"
+          # --- 2. CPU SCHEDULER, CASS & PERFORMANCE (LTO_NONE prevents runner crash) ---
+          inject "" "CONFIG_LTO_NONE=y\nCONFIG_LTO_CLANG_NONE=y\nCONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
 
           # --- 3. SECURITY, BPF & LSM ---
           inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
@@ -162,12 +172,11 @@ jobs:
           # --- 4. ANDROID ROOT & CORE IO ---
           inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_IO_URING=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
 
-          # --- 5. FILESYSTEMS, COMPRESSION & NETWORK ---
-          inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y\nCONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\""
+          # --- 5. FILESYSTEMS & STORAGE ---
+          inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y"
 
-          # --- 6. DYNAMIC CONDITIONAL PATCHES (Old Custom Flags / EROFS / LZ4KDR / Kyber) ---
-          inject "grep -q 'config EROFS_FS' fs/erofs/Kconfig 2>/dev/null" "CONFIG_EROFS_FS_ZIP_LZMA=y\nCONFIG_EROFS_FS_ZIP_DEFLATE=y\nCONFIG_EROFS_FS_ZIP_ACCEL=y\nCONFIG_EROFS_FS_XATTR=y\nCONFIG_EROFS_FS_POSIX_ACL=y\nCONFIG_EROFS_FS_SECURITY=y\nCONFIG_EROFS_FS_ONDEMAND=y"
-          inject "grep -q 'config F2FS_FS' fs/f2fs/Kconfig 2>/dev/null" "CONFIG_F2FS_FS_LZ4=y\nCONFIG_F2FS_FS_LZ4HC=y\nCONFIG_F2FS_FS_LZO=y\nCONFIG_F2FS_FS_LZORLE=y"
+          # --- 6. EXTRA/VENDOR TWEAKS (Standard BBR, LZ4KDR, Kyber, Droidspace) ---
+          inject "" "CONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\""
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
           inject "grep -q 'config MQ_IOSCHED_KYBER' block/Kconfig.iosched 2>/dev/null" "CONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DEFAULT_KYBER=y\nCONFIG_DEFAULT_IOSCHED=\"kyber\""
           inject "grep -q 'config DROIDSPACE' init/Kconfig 2>/dev/null || grep -q 'config DROIDSPACE' security/Kconfig 2>/dev/null" "CONFIG_DROIDSPACE=y"
