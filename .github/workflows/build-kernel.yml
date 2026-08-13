@@ -102,21 +102,15 @@ jobs:
               exit 0
           fi
 
-          # 1. Complete KSU Purge & Proper KSUN Inject (Fixed branch clone)
+          # 1. Inject KernelSU-Next directly into drivers/kernelsu as expected by this source tree
           echo "=> Purging old KSU remnants..."
           rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
           
-          echo "=> Injecting KernelSU-Next properly..."
+          echo "=> Injecting KernelSU-Next into drivers/kernelsu..."
           git clone https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
-          if [ -d "fs" ]; then
-              mkdir -p fs/kernelsu
-              cp -rf /tmp/KSUN/kernel/* fs/kernelsu/
-              if [ -f "fs/kernelsu/setup.sh" ]; then
-                  cd fs/kernelsu && bash setup.sh || true
-                  cd - >/dev/null
-              fi
-          fi
-          rm -rf drivers/kernelsu || true
+          mkdir -p drivers/kernelsu
+          cp -rf /tmp/KSUN/* drivers/kernelsu/
+          rm -rf /tmp/KSUN
 
           # 2. Dynamic Patches (BBRv3, SUSFS)
           echo "=> Attempting Dynamic Patch Pulls..."
@@ -164,7 +158,7 @@ jobs:
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
           inject "grep -q 'config MQ_IOSCHED_KYBER' block/Kconfig.iosched 2>/dev/null" "CONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DEFAULT_KYBER=y\nCONFIG_DEFAULT_IOSCHED=\"kyber\""
           inject "grep -q 'config DROIDSPACE' init/Kconfig 2>/dev/null || grep -q 'config DROIDSPACE' security/Kconfig 2>/dev/null" "CONFIG_DROIDSPACE=y"
-          inject "test -d fs/kernelsu" "CONFIG_KSU=y\nCONFIG_KPROBES=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
+          inject "test -d drivers/kernelsu" "CONFIG_KSU=y\nCONFIG_KPROBES=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
           inject "grep -q 'config BASEBAND_GUARD' security/Kconfig 2>/dev/null" "CONFIG_BASEBAND_GUARD=y"
 
           echo "=> Appending to Defconfigs..."
