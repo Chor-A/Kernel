@@ -102,12 +102,12 @@ jobs:
               exit 0
           fi
 
-          # 1. Complete KSU Purge & Proper KSUN Inject (Fixing Makefile clean reference error)
+          # 1. Complete KSU Purge & Proper KSUN Inject (Fixed branch clone)
           echo "=> Purging old KSU remnants..."
           rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
           
           echo "=> Injecting KernelSU-Next properly..."
-          git clone https://github.com/rifsxd/KernelSU-Next.git -b next /tmp/KSUN
+          git clone https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
           if [ -d "fs" ]; then
               mkdir -p fs/kernelsu
               cp -rf /tmp/KSUN/kernel/* fs/kernelsu/
