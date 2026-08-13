@@ -128,18 +128,11 @@ jobs:
           cp -rf /tmp/KSUN/* drivers/kernelsu/
           rm -rf /tmp/KSUN
 
-          # 2. Proper BBRv3 Integration (Replacing fake patch with clean source & Kconfig registration)
-          echo "=> Integrating BBRv3 Congestion Control..."
-          if ! grep -q 'config TCP_CONG_BBR3' net/ipv4/Kconfig 2>/dev/null; then
-              wget -qO net/ipv4/tcp_bbr3.c "https://raw.githubusercontent.com/google/bbr/v3/net/ipv4/tcp_bbr.c" || true
-              if [ -f "net/ipv4/tcp_bbr3.c" ]; then
-                  echo "=> Registering BBRv3 in net/ipv4/Kconfig & Makefile..."
-                  if ! grep -q "TCP_CONG_BBR3" net/ipv4/Kconfig; then
-                      echo -e "\nconfig TCP_CONG_BBR3\n\ttristate \"BBRv3 congestion control\"\n\tdefault y\n" >> net/ipv4/Kconfig
-                  fi
-                  if ! grep -q "tcp_bbr3.o" net/ipv4/Makefile; then
-                      echo "obj-\$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o" >> net/ipv4/Makefile
-                  fi
+          # 2. Enable Native Linux 5.10 BBR Congestion Control (Fully Compatible)
+          echo "=> Enabling Native BBR Congestion Control..."
+          if ! grep -q 'config TCP_CONG_BBR' net/ipv4/Kconfig 2>/dev/null; then
+              if ! grep -q "TCP_CONG_BBR" net/ipv4/Kconfig; then
+                  echo -e "\nconfig TCP_CONG_BBR\n\ttristate \"BBR congestion control\"\n\tdefault y\n" >> net/ipv4/Kconfig
               fi
           fi
 
@@ -158,47 +151,96 @@ jobs:
               rm -rf /tmp/susfs
           fi
 
-          # 4. Smart Config Injector (Generating valid kernel configuration flags)
+          # 4. Master Config Injector (Your Custom Master Defconfig)
           echo "=> Generating Master Config Fragment..."
           FRAG="/tmp/master_tier.config"
-          touch $FRAG
+          
+          cat << 'CONF' > $FRAG
+          CONFIG_MMU=y
+          CONFIG_SPARSEMEM=y
+          CONFIG_SPARSEMEM_VMEMMAP=y
+          CONFIG_SYSFS=y
+          CONFIG_DEBUG_FS=y
+          CONFIG_DAMON=y
+          CONFIG_DAMON_VADDR=y
+          CONFIG_DAMON_PADDR=y
+          CONFIG_DAMON_SYSFS=y
+          CONFIG_CRYPTO=y
+          CONFIG_CRYPTO_LZ4=y
+          CONFIG_CRYPTO_LZO=y
+          CONFIG_CRYPTO_ZSTD=y
+          CONFIG_ZSWAP=y
+          CONFIG_ZPOOL=y
+          CONFIG_ZSMALLOC=y
+          CONFIG_BLK_DEV_ZRAM=y
+          CONFIG_ZRAM_WRITEBACK=y
+          CONFIG_ZRAM_MULTI_COMP=y
+          CONFIG_ZRAM_MEMORY_TRACKING=y
+          CONFIG_SWAP=y
+          CONFIG_MEMCG=y
+          CONFIG_MEMCG_SWAP=y
+          CONFIG_PSI=y
+          CONFIG_LRU_GEN=y
+          CONFIG_LRU_GEN_ENABLED=y
+          CONFIG_SMP=y
+          CONFIG_SCHED_MC=y
+          CONFIG_CGROUP_SCHED=y
+          CONFIG_FAIR_GROUP_SCHED=y
+          CONFIG_RT_GROUP_SCHED=y
+          CONFIG_CPU_FREQ=y
+          CONFIG_CPU_FREQ_STAT=y
+          CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+          CONFIG_ENERGY_AWARE=y
+          CONFIG_SCHED_CASS=y
+          CONFIG_UCLAMP_TASK=y
+          CONFIG_UCLAMP_TASK_GROUP=y
+          CONFIG_BPF=y
+          CONFIG_BPF_SYSCALL=y
+          CONFIG_CGROUP_BPF=y
+          CONFIG_DEBUG_INFO_BTF=y
+          CONFIG_SECURITY=y
+          CONFIG_SECURITY_NETWORK=y
+          CONFIG_CRYPTO_SHA256=y
+          CONFIG_ASYMMETRIC_KEY_TYPE=y
+          CONFIG_SECURITY_SELINUX=y
+          CONFIG_SECURITY_APPARMOR=y
+          CONFIG_SECURITY_SAFESETID=y
+          CONFIG_SECURITY_LOCKDOWN_LSM=y
+          CONFIG_BPF_LSM=y
+          CONFIG_KPROBES=y
+          CONFIG_KRETPROBES=y
+          CONFIG_OVERLAY_FS=y
+          CONFIG_KSU=y
+          CONFIG_ANON_INODES=y
+          CONFIG_EVENTFD=y
+          CONFIG_IO_URING=y
+          CONFIG_ANDROID_BINDER_IPC=y
+          CONFIG_ANDROID_BINDERFS=y
+          CONFIG_BLOCK=y
+          CONFIG_BLK_INLINE_ENCRYPTION=y
+          CONFIG_FS_ENCRYPTION=y
+          CONFIG_FS_VERITY=y
+          CONFIG_CRYPTO_CRC32=y
+          CONFIG_F2FS_FS=y
+          CONFIG_F2FS_FS_COMPRESSION=y
+          CONFIG_F2FS_FS_ZSTD=y
+          CONFIG_EROFS_FS=y
+          CONFIG_EROFS_FS_ZIP=y
+          CONFIG_MODULES=y
+          CONFIG_MODULE_UNLOAD=y
+          CONFIG_ZSTD_COMPRESS=y
+          CONFIG_ZSTD_DECOMPRESS=y
+          CONFIG_XZ_DEC_ARM64=y
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_DEFAULT_BBR=y
+          CONFIG_DEFAULT_TCP_CONG="bbr"
+          CONF
 
-          function inject() {
-              local check="$1"
-              local flags="$2"
-              if [ -z "$check" ] || eval "$check"; then
-                  echo -e "$flags" >> "$FRAG"
-              fi
-          }
-
-          # Core Performance & Architecture Flags
-          inject "" "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_BLOCK=y\nCONFIG_DEBUG_FS=y\nCONFIG_DEVTMPFS=y"
-          inject "" "CONFIG_SYSVIPC=y\nCONFIG_POSIX_MQUEUE=y\nCONFIG_IPC_NS=y\nCONFIG_PID_NS=y\nCONFIG_USER_NS=y"
-          inject "" "CONFIG_PSI=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y\nCONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y"
-          inject "" "CONFIG_BPF=y\nCONFIG_BPF_JIT=y\nCONFIG_BPF_JIT_ALWAYS_ON=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_CONFIGFS_FS=y\nCONFIG_CROSS_MEMORY_ATTACH=y\nCONFIG_CRYPTO=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_EXT4_FS=y"
-          inject "" "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y\nCONFIG_NETFILTER_XT_TARGET_REJECT=y\nCONFIG_NETFILTER_XT_TARGET_LOG=y\nCONFIG_NETFILTER_XT_MATCH_RECENT=y\nCONFIG_IP_SET=y\nCONFIG_IP_SET_HASH_IP=y\nCONFIG_IP_SET_HASH_NET=y\nCONFIG_NETFILTER_XT_SET=y"
-          inject "" "CONFIG_NET_SCH_FQ=y\nCONFIG_DEFAULT_FQ=y\nCONFIG_DEFAULT_NET_SCH=\"fq\""
-          inject "" "CONFIG_WORKINGSET_PROTECTION=y\nCONFIG_ZRAM=y\nCONFIG_ZSMALLOC=y\nCONFIG_SYSFS=y\nCONFIG_LZ4KD_COMPRESS=y\nCONFIG_LZ4KD_DECOMPRESS=y\nCONFIG_CRYPTO_LZ4KD=y\nCONFIG_ZRAM_MEMORY_TRACKING=y\nCONFIG_ZRAM_MULTI_COMP=y\nCONFIG_ZRAM_WRITEBACK=y"
-          inject "" "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y\nCONFIG_WQ_POWER_EFFICIENT_DEFAULT=y\nCONFIG_TMPFS=y\nCONFIG_TMPFS_POSIX_ACL=y\nCONFIG_TMPFS_XATTR=y"
-          inject "" "CONFIG_OVERLAY_FS=y\nCONFIG_MSDOS_FS=y\nCONFIG_VIRTIO_FS=y\nCONFIG_INCREMENTAL_FS=y\nCONFIG_FUSE_FS=y\nCONFIG_FUSE_BPF=y"
-          inject "" "CONFIG_LZ4_DECOMPRESS=y\nCONFIG_LZ4HC_DECOMPRESS=y\nCONFIG_XZ_DEC=y\nCONFIG_XZ_DEC_ARM=y\nCONFIG_XZ_DEC_ARMTHUMB=y\nCONFIG_XZ_DEC_BCJ=y\nCONFIG_ZLIB_INFLATE=y\nCONFIG_CRYPTO_DECOMPRESS=y\nCONFIG_BUFFER_HEAD=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y"
-
-          # Conditional Feature Flags
-          inject "grep -q 'config EROFS_FS' fs/erofs/Kconfig 2>/dev/null" "CONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT=1\nCONFIG_EROFS_FS_XATTR=y\nCONFIG_EROFS_FS_POSIX_ACL=y\nCONFIG_EROFS_FS_SECURITY=y\nCONFIG_EROFS_FS_ZIP_LZMA=y\nCONFIG_EROFS_FS_ZIP_DEFLATE=y\nCONFIG_EROFS_FS_ZIP_ACCEL=y\nCONFIG_EROFS_FS_ONDEMAND=y"
-          inject "grep -q 'config F2FS_FS' fs/f2fs/Kconfig 2>/dev/null" "CONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_LZ4=y\nCONFIG_F2FS_FS_LZ4HC=y\nCONFIG_F2FS_FS_LZO=y\nCONFIG_F2FS_FS_LZORLE=y\nCONFIG_F2FS_FS_ZSTD=y"
-          inject "test -d mm/damon" "CONFIG_DAMON=y\nCONFIG_DAMON_VADDR=y\nCONFIG_DAMON_PADDR=y\nCONFIG_DAMON_SYSFS=y\nCONFIG_DAMON_RECLAIM=y"
-          inject "grep -q 'config LRU_GEN' mm/Kconfig 2>/dev/null" "CONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y\nCONFIG_LRU_GEN_STATS=y"
-          inject "grep -q 'config TCP_CONG_BBR3' net/ipv4/Kconfig 2>/dev/null || test -f net/ipv4/tcp_bbr3.c" "CONFIG_TCP_CONG_BBR3=y\nCONFIG_DEFAULT_BBR3=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr3\""
-          inject "grep -q 'config MQ_IOSCHED_KYBER' block/Kconfig.iosched 2>/dev/null" "CONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DEFAULT_KYBER=y\nCONFIG_DEFAULT_IOSCHED=\"kyber\""
-          inject "grep -q 'config DROIDSPACE' init/Kconfig 2>/dev/null || grep -q 'config DROIDSPACE' security/Kconfig 2>/dev/null" "CONFIG_DROIDSPACE=y"
-          inject "test -d drivers/kernelsu" "CONFIG_KSU=y\nCONFIG_KPROBES=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
-          inject "grep -q 'config BASEBAND_GUARD' security/Kconfig 2>/dev/null" "CONFIG_BASEBAND_GUARD=y"
-
-          echo "=> Appending Config Fragment to Defconfigs..."
+          echo "=> Appending Master Config Fragment to Defconfigs..."
           for conf in arch/arm64/configs/*defconfig; do
               [ -f "$conf" ] && cat $FRAG >> "$conf"
           done
-          echo "=> Master Automation Patching Completed Successfully!"
+          echo "=> Master Automation & Config Injection Completed Successfully!"
           EOF
           chmod +x /tmp/master_automation.sh
           
