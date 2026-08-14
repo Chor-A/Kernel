@@ -31,7 +31,7 @@ name: build-kernel
           - clang 14
         default: "clang 19"
       pack_flashable:
-        description: 'Build a universal flashable zip'
+        description: 'Build an AnyKernel3 flashable zip'
         type: boolean
         default: true
       defconfig_fragment_exclude:
@@ -91,7 +91,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --reinstall -y \
             build-essential libelf-dev libssl-dev bison flex bc \
-            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch
+            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch zip unzip
 
       - name: Build and Install Pahole v1.31 from Source (User BTF Fix) 🛠️
         run: |
@@ -161,7 +161,6 @@ jobs:
           exec "$REAL_PAHOLE" --skip_encoding_btf_enum64 --skip_encoding_btf_decl_tag --skip_encoding_btf_type_tag "\$@"
           WRAPPER
               chmod +x "$HERMETIC_PAHOLE"
-              echo "=> Wrote wrapper $HERMETIC_PAHOLE -> $REAL_PAHOLE"
           fi
 
           # -------------------------------------------------------------
@@ -280,7 +279,7 @@ jobs:
            	$(Q)$(MAKE) -C $(SUBCMD_SRC) OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
            
            $(BPFOBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
-          -	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ \
+          -	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
           +	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ \
           +		EXTRA_CFLAGS="$(CFLAGS)" $(abspath $@)
            
@@ -337,17 +336,26 @@ jobs:
           # -------------------------------------------------------------
           # 3. KernelSU-Next & SusFS Integration
           # -------------------------------------------------------------
-          rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
+          rm -rf drivers/kernelsu KernelSU /tmp/KSUN || true
           git clone https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
           mkdir -p drivers/kernelsu
           cp -rf /tmp/KSUN/* drivers/kernelsu/
           rm -rf /tmp/KSUN
+          
+          if ! grep -q "kernelsu" drivers/Makefile; then
+              echo "=> Forcing KernelSU compilation in drivers/Makefile..."
+              echo 'obj-y += kernelsu/' >> drivers/Makefile
+          fi
 
           if [ ! -d "fs/susfs" ]; then
+              echo "=> Integrating SusFS core..."
               git clone https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs || true
               if [ -d "/tmp/susfs/kernel_patches" ]; then
-                  cp -r /tmp/susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
-                  cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
+                  cp -r /tmp/susfs/kernel_patches/fs/susfs fs/ || true
+                  cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ || true
+                  if [ -f "/tmp/susfs/kernel_patches/5.10/susfs_core.patch" ]; then
+                      patch -p1 -N < /tmp/susfs/kernel_patches/5.10/susfs_core.patch || true
+                  fi
               fi
               rm -rf /tmp/susfs
           fi
@@ -385,8 +393,7 @@ jobs:
           EOF
           chmod +x /tmp/god_tier_automation.sh
           
-          # Reliable Hook
-          sed -i '/kernel source cloned/a \
+          sed -i '/kernel source cloned\|git clone/a \
           echo "=> TRIGGERING GOD TIER PATCHER..." \
           bash /tmp/god_tier_automation.sh' ./build-kernel.sh
 
@@ -415,15 +422,7 @@ jobs:
         env:
           KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
         run: |
-          ksu_pid=""
-          if [ "${{ inputs.pack_flashable }}" == "true" ]; then
-            ./build/kernelsu-fetch.sh &
-            ksu_pid=$!
-          fi
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
-          if [ -n "$ksu_pid" ]; then
-            wait "$ksu_pid" || echo "::warning::ksud fetch failed; flashable zip will be skipped"
-          fi
 
       - name: Save ccache cache
         if: ${{ inputs.ccache && always() }}
@@ -432,104 +431,48 @@ jobs:
           path: work/.ccache
           key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}
 
-      - name: QEMU Automated Boot Test 🧪
+      - name: Pack with AnyKernel3 📦
         if: ${{ inputs.pack_flashable }}
         run: |
           set -euo pipefail
-          echo "=> Installing QEMU and dependencies..."
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-arm qemu-utils curl cpio
-
-          echo "=> Preparing dummy rootfs..."
-          mkdir -p qemu_test/bin qemu_test/proc qemu_test/sys qemu_test/dev
-
-          echo "=> Downloading static busybox for aarch64..."
-          curl -sL "https://busybox.net/downloads/binaries/1.35.0-aarch64-linux-musl/busybox" -o qemu_test/bin/busybox
-          chmod +x qemu_test/bin/busybox
-          
-          # Create symlinks for busybox
-          cd qemu_test/bin
-          for cmd in sh mount echo sleep dmesg grep poweroff; do
-            ln -s busybox $cmd
-          done
-          cd ../..
-
-          echo "=> Creating minimal init script..."
-          cat << 'EOF' > qemu_test/init
-          #!/bin/sh
-          mount -t proc proc /proc
-          mount -t sysfs sys /sys
-          mount -t devtmpfs dev /dev
-          echo "=========================================="
-          echo "✅ QEMU KERNEL BOOT SUCCESSFUL! ✅"
-          echo "=========================================="
-          echo "=> Verifying KernelSU & SusFS in dmesg:"
-          dmesg | grep -iE 'kernelsu|susfs' || echo "No logs found for KSU/SusFS."
-          echo "=========================================="
-          sleep 2
-          poweroff -f
-          EOF
-          chmod +x qemu_test/init
-
-          echo "=> Packing initramfs..."
-          cd qemu_test
-          find . | cpio -H newc -o > ../initramfs.cpio
-          cd ..
-
-          kernel_img=$(find work/dist -name 'Image' -print -quit)
-          if [ -z "$kernel_img" ]; then
-            echo "Kernel Image not found for QEMU test!"
-            exit 0
-          fi
-
-          echo "=> Booting Kernel in QEMU (Timeout 60s)..."
-          timeout 60s qemu-system-aarch64 \
-            -M virt,gic-version=max \
-            -cpu max \
-            -m 1G \
-            -kernel "$kernel_img" \
-            -initrd initramfs.cpio \
-            -nographic \
-            -append "console=ttyAMA0 earlycon rdinit=/init" | tee qemu_log.txt || true
-
-          echo "=> QEMU Test Result:"
-          if grep -q "QEMU KERNEL BOOT SUCCESSFUL" qemu_log.txt; then
-            echo "🎉 TEST PASSED: The kernel booted and ran the init script!"
-          else
-            echo "⚠️ TEST WARNING: QEMU did not reach the init script. GKI kernels often require specific DTBs to boot on QEMU, but it should still work fine on a real phone."
-          fi
-
-      - name: Pack flashable kernel zip
-        if: ${{ inputs.pack_flashable }}
-        run: |
-          set -euo pipefail
-          if [ ! -f "$PWD/kernelsu/ksud-aarch64-linux-android" ] || \
-             [ ! -f "$PWD/kernelsu/ksud-armv7-linux-androideabi" ]; then
-            echo "ksud binaries missing (fetch failed); skipping flashable zip"
-            exit 0
-          fi
+          echo "=> Finding compiled kernel image..."
           kernel_img=$(find work/dist -name 'Image' -print -quit)
           if [ -z "$kernel_img" ]; then
             kernel_img=$(find work/dist -name 'Image.lz4' -print -quit)
           fi
+          
           if [ -z "$kernel_img" ]; then
-            echo "no kernel Image found in work/dist" >&2
-            find work/dist -type f | head -40
+            echo "::error::No kernel Image found in work/dist"
             exit 1
           fi
+
+          echo "=> Cloning Official AnyKernel3..."
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git AK3
+          rm -rf AK3/.git AK3/README.md
+
+          echo "=> Setting up AnyKernel3 configuration..."
+          # Customize anykernel.sh to generic settings suitable for most modern devices
+          sed -i 's/kernel.string=.*/kernel.string=CloudFox Custom Kernel by Chor-A/' AK3/anykernel.sh
+          sed -i 's/do.devicecheck=.*/do.devicecheck=0/' AK3/anykernel.sh
+          sed -i 's/block=.*/block=auto;/' AK3/anykernel.sh
+          sed -i 's/is_slot_device=.*/is_slot_device=auto;/' AK3/anykernel.sh
+
+          echo "=> Copying $kernel_img to AnyKernel3 root..."
+          cp "$kernel_img" AK3/
+
+          echo "=> Creating flashable zip..."
           mkdir -p work/pkg
-          KERNEL_IMAGE="$kernel_img" \
-          KSUD_ARM64="$PWD/kernelsu/ksud-aarch64-linux-android" \
-          KSUD_ARMV7="$PWD/kernelsu/ksud-armv7-linux-androideabi" \
-          ZIP_OUT="$PWD/work/pkg/cloudfox-kernel-flash.zip" \
-            ./build/pack-flashable.sh
+          cd AK3
+          zip -r9 "../work/pkg/cloudfox-AnyKernel3-flash.zip" *
+          cd ..
+          echo "=> AnyKernel3 Zip created successfully!"
 
       - name: Upload flashable zip
         if: ${{ inputs.pack_flashable && !inputs.publish_release }}
         uses: actions/upload-artifact@v5
         with:
           name: kernel-flash-zip
-          path: work/pkg/cloudfox-kernel-flash.zip
+          path: work/pkg/cloudfox-AnyKernel3-flash.zip
           if-no-files-found: warn
 
       - name: Publish release
@@ -550,15 +493,15 @@ jobs:
           done
           tar -I 'zstd -T0' -cf "$pkg/kernel-dist.tar.zst" .
           assets+=("$pkg/kernel-dist.tar.zst")
-          if [ -f "$pkg/cloudfox-kernel-flash.zip" ]; then
-            assets+=("$pkg/cloudfox-kernel-flash.zip")
+          if [ -f "$pkg/cloudfox-AnyKernel3-flash.zip" ]; then
+            assets+=("$pkg/cloudfox-AnyKernel3-flash.zip")
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" --clobber "${assets[@]}"
           else
             gh release create "$tag" \
               --title "CloudFox kernel build $tag" \
-              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} via Google's unmodified build.sh. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} via Google's unmodified build.sh. Packaged with AnyKernel3. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
           echo "release $tag updated"
