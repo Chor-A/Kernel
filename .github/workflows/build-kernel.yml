@@ -89,22 +89,35 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install Host Dependencies (pahole, dwarves, coreutils, etc.)
+      - name: Install Host Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libelf-dev \
-            libssl-dev \
-            bison \
-            flex \
-            bc \
-            rsync \
-            dwarves \
-            coreutils \
-            libncurses-dev \
-            zlib1g-dev \
-            pkg-config
+          sudo apt-get install --reinstall -y \
+            build-essential libelf-dev libssl-dev bison flex bc \
+            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev
+
+      - name: Build and Install Pahole v1.31 from Source (User BTF Fix) 🛠️
+        run: |
+          set -euo pipefail
+          echo "=> Building pahole 1.31 from source to fix BTF DWARF generation..."
+          PAHOLE_SRC="$HOME/dwarves"
+          rm -rf "$PAHOLE_SRC"
+          for i in 1 2 3 4 5; do
+            if git clone --depth 1 --branch v1.31 https://github.com/acmel/dwarves.git "$PAHOLE_SRC"; then
+              break
+            fi
+            echo "dwarves clone attempt $i failed; retrying in 5s"
+            rm -rf "$PAHOLE_SRC"
+            sleep 5
+          done
+          mkdir -p "$PAHOLE_SRC/build"
+          cd "$PAHOLE_SRC/build"
+          cmake -D__LIB=lib -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release .. >/dev/null
+          make -j"$(nproc)" pahole
+          sudo make install pahole
+          sudo ldconfig
+          command -v pahole
+          pahole --version
 
       - name: Setup God-Tier Automation Engine 🚀
         run: |
@@ -126,9 +139,24 @@ jobs:
               exit 0
           fi
 
-          # 0. BYPASS ANDROID HERMETIC PATH (CRITICAL FIX FOR dd & pahole)
-          echo "=> Forcing host utilities into build path..."
-          echo 'export PATH=$PATH:/usr/bin:/bin' >> ../build.config.common
+          # 0. USER'S MASTER FIX FOR BTF / DD / PAHOLE IN HERMETIC TOOLCHAIN
+          echo "=> Injecting dd into ADDITIONAL_HOST_TOOLS..."
+          if [ -f "../build.config.gki.aarch64" ]; then
+              grep -q '^ADDITIONAL_HOST_TOOLS=' ../build.config.gki.aarch64 || \
+              echo 'ADDITIONAL_HOST_TOOLS="${ADDITIONAL_HOST_TOOLS} dd"' >> ../build.config.gki.aarch64
+          fi
+
+          echo "=> Wrapping hermetic pahole..."
+          HERMETIC_PAHOLE="../build/build-tools/path/linux-x86/pahole"
+          REAL_PAHOLE="$(command -v pahole)"
+          if [ -n "$REAL_PAHOLE" ]; then
+              cat > "$HERMETIC_PAHOLE" <<WRAPPER
+          #!/bin/sh
+          exec "$REAL_PAHOLE" --skip_encoding_btf_enum64 --skip_encoding_btf_decl_tag --skip_encoding_btf_type_tag "\$@"
+          WRAPPER
+              chmod +x "$HERMETIC_PAHOLE"
+              echo "=> Wrote wrapper $HERMETIC_PAHOLE -> $REAL_PAHOLE"
+          fi
 
           # 1. Complete KSU Purge & Proper KSUN Inject into drivers/kernelsu
           echo "=> Purging old KSU remnants..."
@@ -151,7 +179,7 @@ jobs:
               rm -rf /tmp/susfs
           fi
 
-          # 3. Master Config Injector (Exact Mirror of your Blueprint)
+          # 3. Master Config Injector (BTF ENABLED)
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
           touch $FRAG
@@ -170,7 +198,7 @@ jobs:
           # --- 2. CPU SCHEDULER, CASS & PERFORMANCE ---
           inject "" "CONFIG_LTO_NONE=y\nCONFIG_LTO_CLANG_NONE=y\nCONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
 
-          # --- 3. SECURITY, BPF & LSM (ADDED DEBUG_INFO_SPLIT AS PER RESEARCH) ---
+          # --- 3. SECURITY, BPF & LSM (BTF KEPT ALIVE!) ---
           inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
 
           # --- 4. ANDROID ROOT & CORE IO ---
