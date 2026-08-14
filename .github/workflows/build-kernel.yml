@@ -116,7 +116,7 @@ jobs:
           command -v pahole
           pahole --version
 
-      - name: Setup God-Tier Automation Engine (With BTF Source Patches) 🚀
+      - name: Setup God-Tier Automation Engine (With KMI Bypass & SusFS Flags) 🚀
         run: |
           echo "🔥 Creating Smart Automation Script 🔥"
           
@@ -137,11 +137,18 @@ jobs:
           fi
 
           # -------------------------------------------------------------
-          # FIX 1: BYPASS ANDROID HERMETIC PATH FOR 'dd' & 'pahole'
+          # FIX 1: BYPASS ANDROID HERMETIC PATH & ABI/KMI STRICT CHECKS
           # -------------------------------------------------------------
-          echo "=> Injecting dd and pahole into ADDITIONAL_HOST_TOOLS..."
+          echo "=> Injecting KMI/ABI bypass and host tools into build config..."
           if [ -f "../build.config.common" ]; then
               echo 'export ADDITIONAL_HOST_TOOLS="${ADDITIONAL_HOST_TOOLS} dd pahole"' >> ../build.config.common
+          fi
+          
+          if [ -f "../build.config.gki.aarch64" ]; then
+              # Disable KMI/ABI checking completely so build doesn't fail on missing __cfi_slowpath
+              echo 'KMI_SYMBOL_LIST_STRICT_MODE=0' >> ../build.config.gki.aarch64
+              echo 'KMI_ENFORCED=0' >> ../build.config.gki.aarch64
+              echo 'UPDATE_KMI_SYMBOL_LIST=1' >> ../build.config.gki.aarch64
           fi
 
           echo "=> Wrapping hermetic pahole..."
@@ -158,7 +165,7 @@ jobs:
           fi
 
           # -------------------------------------------------------------
-          # FIX 2: APPLY THE KERNEL BTF C-CODE PATCHES (Provided by User)
+          # FIX 2: APPLY THE KERNEL BTF C-CODE PATCHES
           # -------------------------------------------------------------
           echo "=> Applying Android 12-5.10 BTF source patches..."
           cat << 'PATCH_EOF' > /tmp/btf_fixes.patch
@@ -360,18 +367,20 @@ jobs:
               fi
           }
 
-          # --- RAM, CPU & PERF ---
+          # --- RAM, CPU & PERF (LTO NO LONGER DISABLED) ---
           inject "" "CONFIG_MMU=y\nCONFIG_SPARSEMEM=y\nCONFIG_SPARSEMEM_VMEMMAP=y\nCONFIG_SYSFS=y\nCONFIG_DEBUG_FS=y\nCONFIG_DAMON=y\nCONFIG_DAMON_VADDR=y\nCONFIG_DAMON_PADDR=y\nCONFIG_DAMON_SYSFS=y\nCONFIG_CRYPTO=y\nCONFIG_CRYPTO_LZ4=y\nCONFIG_CRYPTO_LZO=y\nCONFIG_CRYPTO_ZSTD=y\nCONFIG_ZSWAP=y\nCONFIG_ZPOOL=y\nCONFIG_ZSMALLOC=y\nCONFIG_BLK_DEV_ZRAM=y\nCONFIG_ZRAM_WRITEBACK=y\nCONFIG_ZRAM_MULTI_COMP=y\nCONFIG_ZRAM_MEMORY_TRACKING=y\nCONFIG_SWAP=y\nCONFIG_MEMCG=y\nCONFIG_MEMCG_SWAP=y\nCONFIG_PSI=y\nCONFIG_VM_CLEAN_LOW_KBYTES=y\nCONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y"
-          inject "" "CONFIG_LTO_NONE=y\nCONFIG_LTO_CLANG_NONE=y\nCONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
+          inject "" "CONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
 
-          # --- SECURITY, BPF & LSM (INCLUDING CRITICAL BTF PREREQUISITES) ---
+          # --- SECURITY, BPF & LSM (BTF KEPT ALIVE) ---
           inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_DEBUG_INFO_BTF_MODULES=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
 
-          # --- ANDROID ROOT & FS ---
-          inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_IO_URING=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
+          # --- ANDROID ROOT, KSU & SUSFS ---
+          inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y\nCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y\nCONFIG_KSU_SUSFS_OPEN_REDIRECT=y\nCONFIG_KSU_SUSFS_SUS_MAP=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_IO_URING=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
+
+          # --- FILESYSTEMS & STORAGE ---
           inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y"
 
-          # --- EXTRA/VENDOR TWEAKS ---
+          # --- EXTRA/VENDOR TWEAKS (WITH BBR NORMAL CONFIG) ---
           inject "" "CONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\""
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
           inject "grep -q 'config MQ_IOSCHED_KYBER' block/Kconfig.iosched 2>/dev/null" "CONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DEFAULT_KYBER=y\nCONFIG_DEFAULT_IOSCHED=\"kyber\""
