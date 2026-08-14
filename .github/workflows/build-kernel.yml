@@ -91,7 +91,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --reinstall -y \
             build-essential libelf-dev libssl-dev bison flex bc \
-            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch
+            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch zip
 
       - name: Build and Install Pahole v1.31 from Source (User BTF Fix) 🛠️
         run: |
@@ -428,6 +428,14 @@ jobs:
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git anykernel3
           cd anykernel3
 
+          # Ensure output directory exists
+          mkdir -p ../work/pkg
+
+          # Install zip if not available (usually it is)
+          if ! command -v zip >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y zip
+          fi
+
           # Find kernel image
           kernel_img=""
           for f in Image Image.gz Image.lz4 zImage; do
@@ -438,11 +446,12 @@ jobs:
           done
           if [ -z "$kernel_img" ]; then
             echo "::error::No kernel image found in work/dist"
-            find ../work/dist -type f | head -40
+            [ -d ../work/dist ] && find ../work/dist -type f | head -40 || true
             exit 1
           fi
           echo "=> Using kernel image: $kernel_img"
           cp "../work/dist/$kernel_img" .
+
           # Update kernel.string in anykernel.sh
           sed -i "s/^kernel.string=.*/kernel.string=$kernel_img/" anykernel.sh
 
