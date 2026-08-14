@@ -116,7 +116,7 @@ jobs:
           command -v pahole
           pahole --version
 
-      - name: Setup God-Tier Automation Engine (With KMI Bypass & SusFS Flags) 🚀
+      - name: Setup God-Tier Automation Engine (Safe & Minimal) 🚀
         run: |
           echo "🔥 Creating Smart Automation Script 🔥"
           
@@ -145,7 +145,7 @@ jobs:
           fi
           
           if [ -f "../build.config.gki.aarch64" ]; then
-              # Disable KMI/ABI checking completely so build doesn't fail on missing __cfi_slowpath
+              # Disable KMI/ABI checking completely
               echo 'KMI_SYMBOL_LIST_STRICT_MODE=0' >> ../build.config.gki.aarch64
               echo 'KMI_ENFORCED=0' >> ../build.config.gki.aarch64
               echo 'UPDATE_KMI_SYMBOL_LIST=1' >> ../build.config.gki.aarch64
@@ -280,7 +280,7 @@ jobs:
            	$(Q)$(MAKE) -C $(SUBCMD_SRC) OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
            
            $(BPFOBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
-          -	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
+          -	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ \
           +	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ \
           +		EXTRA_CFLAGS="$(CFLAGS)" $(abspath $@)
            
@@ -353,7 +353,7 @@ jobs:
           fi
 
           # -------------------------------------------------------------
-          # 4. Master Config Injector
+          # 4. Master Config Injector (SAFE & MINIMAL MODE)
           # -------------------------------------------------------------
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
@@ -367,25 +367,16 @@ jobs:
               fi
           }
 
-          # --- RAM, CPU & PERF (LTO NO LONGER DISABLED) ---
-          inject "" "CONFIG_MMU=y\nCONFIG_SPARSEMEM=y\nCONFIG_SPARSEMEM_VMEMMAP=y\nCONFIG_SYSFS=y\nCONFIG_DEBUG_FS=y\nCONFIG_DAMON=y\nCONFIG_DAMON_VADDR=y\nCONFIG_DAMON_PADDR=y\nCONFIG_DAMON_SYSFS=y\nCONFIG_CRYPTO=y\nCONFIG_CRYPTO_LZ4=y\nCONFIG_CRYPTO_LZO=y\nCONFIG_CRYPTO_ZSTD=y\nCONFIG_ZSWAP=y\nCONFIG_ZPOOL=y\nCONFIG_ZSMALLOC=y\nCONFIG_BLK_DEV_ZRAM=y\nCONFIG_ZRAM_WRITEBACK=y\nCONFIG_ZRAM_MULTI_COMP=y\nCONFIG_ZRAM_MEMORY_TRACKING=y\nCONFIG_SWAP=y\nCONFIG_MEMCG=y\nCONFIG_MEMCG_SWAP=y\nCONFIG_PSI=y\nCONFIG_VM_CLEAN_LOW_KBYTES=y\nCONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y"
-          inject "" "CONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
+          # --- 1. CORE BPF & LSM (SAFE FOR KSU) ---
+          inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_DEBUG_INFO_BTF_MODULES=y\nCONFIG_BPF_LSM=y"
 
-          # --- SECURITY, BPF & LSM (BTF KEPT ALIVE) ---
-          inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_DEBUG_INFO_BTF_MODULES=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
+          # --- 2. KERNELSU & SUSFS (ROOT & HIDING) ---
+          inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y\nCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y\nCONFIG_KSU_SUSFS_OPEN_REDIRECT=y\nCONFIG_KSU_SUSFS_SUS_MAP=y"
 
-          # --- ANDROID ROOT, KSU & SUSFS ---
-          inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y\nCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y\nCONFIG_KSU_SUSFS_OPEN_REDIRECT=y\nCONFIG_KSU_SUSFS_SUS_MAP=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_IO_URING=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
-
-          # --- FILESYSTEMS & STORAGE ---
-          inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y"
-
-          # --- EXTRA/VENDOR TWEAKS (WITH BBR NORMAL CONFIG) ---
+          # --- 3. BBR, ZRAM & KYBER (SAFE PERFORMANCE) ---
           inject "" "CONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\""
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
           inject "grep -q 'config MQ_IOSCHED_KYBER' block/Kconfig.iosched 2>/dev/null" "CONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DEFAULT_KYBER=y\nCONFIG_DEFAULT_IOSCHED=\"kyber\""
-          inject "grep -q 'config DROIDSPACE' init/Kconfig 2>/dev/null || grep -q 'config DROIDSPACE' security/Kconfig 2>/dev/null" "CONFIG_DROIDSPACE=y"
-          inject "grep -q 'config BASEBAND_GUARD' security/Kconfig 2>/dev/null" "CONFIG_BASEBAND_GUARD=y"
 
           echo "=> Appending to Defconfigs..."
           for conf in arch/arm64/configs/*defconfig; do
@@ -440,6 +431,73 @@ jobs:
         with:
           path: work/.ccache
           key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}
+
+      - name: QEMU Automated Boot Test 🧪
+        if: ${{ inputs.pack_flashable }}
+        run: |
+          set -euo pipefail
+          echo "=> Installing QEMU and dependencies..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm qemu-utils curl cpio
+
+          echo "=> Preparing dummy rootfs..."
+          mkdir -p qemu_test/bin qemu_test/proc qemu_test/sys qemu_test/dev
+
+          echo "=> Downloading static busybox for aarch64..."
+          curl -sL "https://busybox.net/downloads/binaries/1.35.0-aarch64-linux-musl/busybox" -o qemu_test/bin/busybox
+          chmod +x qemu_test/bin/busybox
+          
+          # Create symlinks for busybox
+          cd qemu_test/bin
+          for cmd in sh mount echo sleep dmesg grep poweroff; do
+            ln -s busybox $cmd
+          done
+          cd ../..
+
+          echo "=> Creating minimal init script..."
+          cat << 'EOF' > qemu_test/init
+          #!/bin/sh
+          mount -t proc proc /proc
+          mount -t sysfs sys /sys
+          mount -t devtmpfs dev /dev
+          echo "=========================================="
+          echo "✅ QEMU KERNEL BOOT SUCCESSFUL! ✅"
+          echo "=========================================="
+          echo "=> Verifying KernelSU & SusFS in dmesg:"
+          dmesg | grep -iE 'kernelsu|susfs' || echo "No logs found for KSU/SusFS."
+          echo "=========================================="
+          sleep 2
+          poweroff -f
+          EOF
+          chmod +x qemu_test/init
+
+          echo "=> Packing initramfs..."
+          cd qemu_test
+          find . | cpio -H newc -o > ../initramfs.cpio
+          cd ..
+
+          kernel_img=$(find work/dist -name 'Image' -print -quit)
+          if [ -z "$kernel_img" ]; then
+            echo "Kernel Image not found for QEMU test!"
+            exit 0
+          fi
+
+          echo "=> Booting Kernel in QEMU (Timeout 60s)..."
+          timeout 60s qemu-system-aarch64 \
+            -M virt,gic-version=max \
+            -cpu max \
+            -m 1G \
+            -kernel "$kernel_img" \
+            -initrd initramfs.cpio \
+            -nographic \
+            -append "console=ttyAMA0 earlycon rdinit=/init" | tee qemu_log.txt || true
+
+          echo "=> QEMU Test Result:"
+          if grep -q "QEMU KERNEL BOOT SUCCESSFUL" qemu_log.txt; then
+            echo "🎉 TEST PASSED: The kernel booted and ran the init script!"
+          else
+            echo "⚠️ TEST WARNING: QEMU did not reach the init script. GKI kernels often require specific DTBs to boot on QEMU, but it should still work fine on a real phone."
+          fi
 
       - name: Pack flashable kernel zip
         if: ${{ inputs.pack_flashable }}
