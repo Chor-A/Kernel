@@ -31,11 +31,11 @@ name: build-kernel
           - clang 14
         default: "clang 19"
       pack_flashable:
-        description: 'Build a universal self-patching flashable zip (on-device kernel replacement via ksud)'
+        description: 'Build a universal flashable zip'
         type: boolean
         default: true
       defconfig_fragment_exclude:
-        description: 'Defconfig fragments to exclude (space- or comma-separated names)'
+        description: 'Defconfig fragments to exclude'
         required: false
         default: ""
       append_build_env:
@@ -81,20 +81,17 @@ jobs:
         run: |
           sudo bash build/free-disk-space.sh
           echo "=> Purging unnecessary pre-installed software to free up space..."
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
           sudo apt-get clean
           df -h
 
-      - name: Install Host Dependencies
+      - name: Install Host Dependencies (BTF/Build tools)
         run: |
           sudo apt-get update
           sudo apt-get install --reinstall -y \
             build-essential libelf-dev libssl-dev bison flex bc \
-            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev
+            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch
 
       - name: Build and Install Pahole v1.31 from Source (User BTF Fix) 🛠️
         run: |
@@ -119,7 +116,7 @@ jobs:
           command -v pahole
           pahole --version
 
-      - name: Setup God-Tier Automation Engine 🚀
+      - name: Setup God-Tier Automation Engine (With BTF Source Patches) 🚀
         run: |
           echo "🔥 Creating Smart Automation Script 🔥"
           
@@ -139,17 +136,19 @@ jobs:
               exit 0
           fi
 
-          # 0. USER'S MASTER FIX FOR BTF / DD / PAHOLE IN HERMETIC TOOLCHAIN
-          echo "=> Injecting dd into ADDITIONAL_HOST_TOOLS..."
-          if [ -f "../build.config.gki.aarch64" ]; then
-              grep -q '^ADDITIONAL_HOST_TOOLS=' ../build.config.gki.aarch64 || \
-              echo 'ADDITIONAL_HOST_TOOLS="${ADDITIONAL_HOST_TOOLS} dd"' >> ../build.config.gki.aarch64
+          # -------------------------------------------------------------
+          # FIX 1: BYPASS ANDROID HERMETIC PATH FOR 'dd' & 'pahole'
+          # -------------------------------------------------------------
+          echo "=> Injecting dd and pahole into ADDITIONAL_HOST_TOOLS..."
+          if [ -f "../build.config.common" ]; then
+              echo 'export ADDITIONAL_HOST_TOOLS="${ADDITIONAL_HOST_TOOLS} dd pahole"' >> ../build.config.common
           fi
 
           echo "=> Wrapping hermetic pahole..."
           HERMETIC_PAHOLE="../build/build-tools/path/linux-x86/pahole"
           REAL_PAHOLE="$(command -v pahole)"
           if [ -n "$REAL_PAHOLE" ]; then
+              mkdir -p "$(dirname "$HERMETIC_PAHOLE")"
               cat > "$HERMETIC_PAHOLE" <<WRAPPER
           #!/bin/sh
           exec "$REAL_PAHOLE" --skip_encoding_btf_enum64 --skip_encoding_btf_decl_tag --skip_encoding_btf_type_tag "\$@"
@@ -158,18 +157,185 @@ jobs:
               echo "=> Wrote wrapper $HERMETIC_PAHOLE -> $REAL_PAHOLE"
           fi
 
-          # 1. Complete KSU Purge & Proper KSUN Inject into drivers/kernelsu
-          echo "=> Purging old KSU remnants..."
+          # -------------------------------------------------------------
+          # FIX 2: APPLY THE KERNEL BTF C-CODE PATCHES (Provided by User)
+          # -------------------------------------------------------------
+          echo "=> Applying Android 12-5.10 BTF source patches..."
+          cat << 'PATCH_EOF' > /tmp/btf_fixes.patch
+          --- a/include/linux/android_kabi.h
+          +++ b/include/linux/android_kabi.h
+          @@ -63,7 +63,7 @@
+            _new;						\
+            struct {					\
+            	_orig;					\
+          -		} __UNIQUE_ID(android_kabi_hide);		\
+          +		};						\
+            __ANDROID_KABI_CHECK_SIZE_ALIGN(_orig, _new);	\
+            }
+          --- a/tools/lib/bpf/Makefile
+          +++ b/tools/lib/bpf/Makefile
+          @@ -59,28 +59,7 @@
+            VERBOSE = 0
+           endif
+           
+          -FEATURE_USER = .libbpf
+          -FEATURE_TESTS = libelf zlib bpf
+          -FEATURE_DISPLAY = libelf zlib bpf
+          -
+           INCLUDES = -I. -I$(srctree)/tools/include -I$(srctree)/tools/include/uapi
+          -FEATURE_CHECK_CFLAGS-bpf = $(INCLUDES)
+          -
+          -check_feat := 1
+          -NON_CHECK_FEAT_TARGETS := clean TAGS tags cscope help
+          -ifdef MAKECMDGOALS
+          -ifeq ($(filter-out $(NON_CHECK_FEAT_TARGETS),$(MAKECMDGOALS)),)
+          -  check_feat := 0
+          -endif
+          -endif
+          -
+          -ifeq ($(check_feat),1)
+          -ifeq ($(FEATURES_DUMP),)
+          -include $(srctree)/tools/build/Makefile.feature
+          -else
+          -include $(FEATURES_DUMP)
+          -endif
+          -endif
+           
+           export prefix libdir src obj
+           
+          @@ -157,7 +136,7 @@
+           
+           all_cmd: $(CMD_TARGETS) check
+           
+          -$(BPF_IN_SHARED): force elfdep zdep bpfdep $(BPF_HELPER_DEFS)
+          +$(BPF_IN_SHARED): force $(BPF_HELPER_DEFS)
+           	@(test -f ../../include/uapi/linux/bpf.h -a -f ../../../include/uapi/linux/bpf.h && ( \
+           	(diff -B ../../include/uapi/linux/bpf.h ../../../include/uapi/linux/bpf.h >/dev/null) || \
+           	echo "Warning: Kernel ABI header at 'tools/include/uapi/linux/bpf.h' differs from latest version at 'include/uapi/linux/bpf.h'" >&2 )) || true
+          @@ -175,7 +154,7 @@
+           	echo "Warning: Kernel ABI header at 'tools/include/uapi/linux/if_xdp.h' differs from latest version at 'include/uapi/linux/if_xdp.h'" >&2 )) || true
+           	$(Q)$(MAKE) $(build)=libbpf OUTPUT=$(SHARED_OBJDIR) CFLAGS="$(CFLAGS) $(SHLIB_FLAGS)"
+           
+          -$(BPF_IN_STATIC): force elfdep zdep bpfdep $(BPF_HELPER_DEFS)
+          +$(BPF_IN_STATIC): force $(BPF_HELPER_DEFS)
+           	$(Q)$(MAKE) $(build)=libbpf OUTPUT=$(STATIC_OBJDIR)
+           
+           $(BPF_HELPER_DEFS): $(srctree)/tools/include/uapi/linux/bpf.h
+          @@ -264,34 +243,16 @@
+           
+           install: install_lib install_pkgconfig install_headers
+           
+          -### Cleaning rules
+          -
+          -config-clean:
+          -	$(call QUIET_CLEAN, feature-detect)
+          -	$(Q)$(MAKE) -C $(srctree)/tools/build/feature/ clean >/dev/null
+          -
+          -clean: config-clean
+          +clean:
+           	$(call QUIET_CLEAN, libbpf) $(RM) -rf $(CMD_TARGETS)		     \
+           		*~ .*.d .*.cmd LIBBPF-CFLAGS $(BPF_HELPER_DEFS)		     \
+           		$(SHARED_OBJDIR) $(STATIC_OBJDIR)			     \
+           		$(addprefix $(OUTPUT),					     \
+           			    *.o *.a *.so *.so.$(LIBBPF_MAJOR_VERSION) *.pc)
+          -	$(call QUIET_CLEAN, core-gen) $(RM) $(OUTPUT)FEATURE-DUMP.libbpf
+          -
+          -
+           
+          -PHONY += force elfdep zdep bpfdep cscope tags
+          +PHONY += force cscope tags
+           force:
+           
+          -elfdep:
+          -	@if [ "$(feature-libelf)" != "1" ]; then echo "No libelf found"; exit 1 ; fi
+          -
+          -zdep:
+          -	@if [ "$(feature-zlib)" != "1" ]; then echo "No zlib found"; exit 1 ; fi
+          -
+          -bpfdep:
+          -	@if [ "$(feature-bpf)" != "1" ]; then echo "BPF API too old"; exit 1 ; fi
+          -
+           cscope:
+           	ls *.c *.h > cscope.files
+           	cscope -b -q -I $(srctree)/include -f cscope.out
+          --- a/tools/bpf/resolve_btfids/Makefile
+          +++ b/tools/bpf/resolve_btfids/Makefile
+          @@ -23,6 +23,8 @@
+           LD       = $(HOSTLD)
+           ARCH     = $(HOSTARCH)
+           RM      ?= rm
+          +CFLAGS  := $(KBUILD_HOSTCFLAGS)
+          +LDFLAGS := $(KBUILD_HOSTLDFLAGS)
+           
+           OUTPUT ?= $(srctree)/tools/bpf/resolve_btfids/
+           
+          @@ -45,13 +47,15 @@
+           	$(Q)$(MAKE) -C $(SUBCMD_SRC) OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
+           
+           $(BPFOBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
+          -	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
+          +	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ \
+          +		EXTRA_CFLAGS="$(CFLAGS)" $(abspath $@)
+           
+          -CFLAGS := -g \
+          +CFLAGS += -g \
+                      -I$(srctree)/tools/include \
+                      -I$(srctree)/tools/include/uapi \
+                      -I$(LIBBPF_SRC) \
+          -          -I$(SUBCMD_SRC)
+          +          -I$(SUBCMD_SRC) \
+          +          -std=gnu11
+           
+           LIBS = -lelf -lz
+           
+          --- a/net/core/xdp.c
+          +++ b/net/core/xdp.c
+          @@ -12,6 +12,7 @@
+           #include <linux/idr.h>
+           #include <linux/rhashtable.h>
+           #include <linux/bug.h>
+          +#include <linux/btf.h>
+           #include <net/page_pool.h>
+           
+           #include <net/xdp.h>
+          @@ -387,6 +388,13 @@
+           void xdp_return_buff(struct xdp_buff *xdp)
+           {
+           	__xdp_return(xdp->data, &xdp->rxq->mem, true, xdp);
+          +	/* xdp_buff is referenced via BTF_ID_LIST_SINGLE(bpf_xdp_output_btf_ids)
+          +	 * in net/core/filter.c but is not otherwise emitted into vmlinux BTF,
+          +	 * so resolve_btfids aborts with "unresolved symbol xdp_buff". Force BTF
+          +	 * emission here where the struct is complete (this file includes both
+          +	 * <net/xdp.h> for the type and <linux/btf.h> for BTF_TYPE_EMIT). */
+          +	BTF_TYPE_EMIT(struct xdp_buff);
+          +
+           }
+           
+           /* Only called for MEM_TYPE_PAGE_POOL see xdp.h */
+          --- a/tools/bpf/resolve_btfids/main.c
+          +++ b/tools/bpf/resolve_btfids/main.c
+          @@ -649,6 +649,9 @@ static int symbols_patch(struct object *obj)
+           	if (sets_patch(obj))
+           		return -1;
+           
+          +	/* Set type to ensure endian translation occurs. */
+          +	obj->efile.idlist->d_type = ELF_T_WORD;
+          +
+           	elf_flagdata(obj->efile.idlist, ELF_C_SET, ELF_F_DIRTY);
+           
+           	err = elf_update(obj->efile.elf, ELF_C_WRITE);
+          PATCH_EOF
+          patch -p1 -N < /tmp/btf_fixes.patch || echo "=> Patches already applied or skipped"
+
+          # -------------------------------------------------------------
+          # 3. KernelSU-Next & SusFS Integration
+          # -------------------------------------------------------------
           rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
-          
-          echo "=> Injecting KernelSU-Next into drivers/kernelsu..."
           git clone https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
           mkdir -p drivers/kernelsu
           cp -rf /tmp/KSUN/* drivers/kernelsu/
           rm -rf /tmp/KSUN
 
-          # 2. SusFS Integration Safely
-          echo "=> Fetching SUSFS components..."
           if [ ! -d "fs/susfs" ]; then
               git clone https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs || true
               if [ -d "/tmp/susfs/kernel_patches" ]; then
@@ -179,7 +345,9 @@ jobs:
               rm -rf /tmp/susfs
           fi
 
-          # 3. Master Config Injector (BTF ENABLED)
+          # -------------------------------------------------------------
+          # 4. Master Config Injector
+          # -------------------------------------------------------------
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
           touch $FRAG
@@ -192,22 +360,18 @@ jobs:
               fi
           }
 
-          # --- 1. RAM, ZRAM & MEMORY MANAGEMENT (MM) ---
+          # --- RAM, CPU & PERF ---
           inject "" "CONFIG_MMU=y\nCONFIG_SPARSEMEM=y\nCONFIG_SPARSEMEM_VMEMMAP=y\nCONFIG_SYSFS=y\nCONFIG_DEBUG_FS=y\nCONFIG_DAMON=y\nCONFIG_DAMON_VADDR=y\nCONFIG_DAMON_PADDR=y\nCONFIG_DAMON_SYSFS=y\nCONFIG_CRYPTO=y\nCONFIG_CRYPTO_LZ4=y\nCONFIG_CRYPTO_LZO=y\nCONFIG_CRYPTO_ZSTD=y\nCONFIG_ZSWAP=y\nCONFIG_ZPOOL=y\nCONFIG_ZSMALLOC=y\nCONFIG_BLK_DEV_ZRAM=y\nCONFIG_ZRAM_WRITEBACK=y\nCONFIG_ZRAM_MULTI_COMP=y\nCONFIG_ZRAM_MEMORY_TRACKING=y\nCONFIG_SWAP=y\nCONFIG_MEMCG=y\nCONFIG_MEMCG_SWAP=y\nCONFIG_PSI=y\nCONFIG_VM_CLEAN_LOW_KBYTES=y\nCONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y"
-
-          # --- 2. CPU SCHEDULER, CASS & PERFORMANCE ---
           inject "" "CONFIG_LTO_NONE=y\nCONFIG_LTO_CLANG_NONE=y\nCONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
 
-          # --- 3. SECURITY, BPF & LSM (BTF KEPT ALIVE!) ---
-          inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
+          # --- SECURITY, BPF & LSM (INCLUDING CRITICAL BTF PREREQUISITES) ---
+          inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_DEBUG_INFO_BTF_MODULES=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
 
-          # --- 4. ANDROID ROOT & CORE IO ---
+          # --- ANDROID ROOT & FS ---
           inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_IO_URING=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
-
-          # --- 5. FILESYSTEMS & STORAGE ---
           inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y"
 
-          # --- 6. EXTRA/VENDOR TWEAKS ---
+          # --- EXTRA/VENDOR TWEAKS ---
           inject "" "CONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\""
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
           inject "grep -q 'config MQ_IOSCHED_KYBER' block/Kconfig.iosched 2>/dev/null" "CONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DEFAULT_KYBER=y\nCONFIG_DEFAULT_IOSCHED=\"kyber\""
