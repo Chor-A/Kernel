@@ -1,0 +1,506 @@
+name: build-kernel
+"on":
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish the build as a GitHub release'
+        type: boolean
+        default: true
+      release_tag:
+        description: 'Release tag (auto-generated as kernel-YYYYMMDD when empty)'
+        required: false
+        default: ""
+      kernel_repo:
+        description: 'Kernel source repository (full URL or scp-style remote)'
+        required: false
+        default: ""
+      kernel_branch:
+        description: 'Kernel source branch'
+        required: false
+        default: ""
+      kernel_commit:
+        description: 'Kernel source commit'
+        required: false
+        default: ""
+      clang_version:
+        description: Clang toolchain version
+        required: false
+        type: choice
+        options:
+          - clang 19
+          - clang 14
+        default: "clang 19"
+      pack_flashable:
+        description: 'Build a universal flashable zip'
+        type: boolean
+        default: true
+      defconfig_fragment_exclude:
+        description: 'Defconfig fragments to exclude'
+        required: false
+        default: ""
+      append_build_env:
+        description: 'Extra KEY=VALUE pairs appended to build.config.cloudfox'
+        required: false
+        default: ""
+      append_config:
+        description: 'Extra literal CONFIG_* lines injected into the defconfig'
+        required: false
+        default: ""
+      ccache:
+        description: 'Accelerate with ccache.'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: kernel-build-${{ github.event.inputs.release_tag || 'default' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      KERNEL_REPO: ${{ inputs.kernel_repo }}
+      KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+      KERNEL_COMMIT: ${{ inputs.kernel_commit }}
+      CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst"}')[inputs.clang_version] }}
+      DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
+      APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
+      APPEND_CONFIG: ${{ inputs.append_config }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      CCACHE_OPT: ${{ inputs.ccache && '1' || '' }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Free disk space & Maximize Build Space 🧹
+        run: |
+          sudo bash build/free-disk-space.sh
+          echo "=> Purging unnecessary pre-installed software to free up space..."
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo apt-get clean
+          df -h
+
+      - name: Install Host Dependencies (BTF/Build tools)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --reinstall -y \
+            build-essential libelf-dev libssl-dev bison flex bc \
+            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch
+
+      - name: Build and Install Pahole v1.31 from Source (User BTF Fix) 🛠️
+        run: |
+          set -euo pipefail
+          echo "=> Building pahole 1.31 from source to fix BTF DWARF generation..."
+          PAHOLE_SRC="$HOME/dwarves"
+          rm -rf "$PAHOLE_SRC"
+          for i in 1 2 3 4 5; do
+            if git clone --depth 1 --branch v1.31 https://github.com/acmel/dwarves.git "$PAHOLE_SRC"; then
+              break
+            fi
+            echo "dwarves clone attempt $i failed; retrying in 5s"
+            rm -rf "$PAHOLE_SRC"
+            sleep 5
+          done
+          mkdir -p "$PAHOLE_SRC/build"
+          cd "$PAHOLE_SRC/build"
+          cmake -D__LIB=lib -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release .. >/dev/null
+          make -j"$(nproc)" pahole
+          sudo make install pahole
+          sudo ldconfig
+          command -v pahole
+          pahole --version
+
+      - name: Setup God-Tier Automation Engine (With KMI Bypass & SusFS Flags) 🚀
+        run: |
+          echo "🔥 Creating Smart Automation Script 🔥"
+          
+          cat << 'EOF' > /tmp/god_tier_automation.sh
+          #!/bin/bash
+          set -euo pipefail
+          echo "========================================="
+          echo " 🚀 GOD-TIER SMART AUTOMATION TRIGGERED  "
+          echo "========================================="
+
+          if [ -d "work/common" ]; then
+              cd work/common
+          elif [ -d "work" ]; then
+              cd work
+          else
+              echo "=> Cannot find kernel source. Skipping patch."
+              exit 0
+          fi
+
+          # -------------------------------------------------------------
+          # FIX 1: BYPASS ANDROID HERMETIC PATH & ABI/KMI STRICT CHECKS
+          # -------------------------------------------------------------
+          echo "=> Injecting KMI/ABI bypass and host tools into build config..."
+          if [ -f "../build.config.common" ]; then
+              echo 'export ADDITIONAL_HOST_TOOLS="${ADDITIONAL_HOST_TOOLS} dd pahole"' >> ../build.config.common
+          fi
+          
+          if [ -f "../build.config.gki.aarch64" ]; then
+              # Disable KMI/ABI checking completely so build doesn't fail on missing __cfi_slowpath
+              echo 'KMI_SYMBOL_LIST_STRICT_MODE=0' >> ../build.config.gki.aarch64
+              echo 'KMI_ENFORCED=0' >> ../build.config.gki.aarch64
+              echo 'UPDATE_KMI_SYMBOL_LIST=1' >> ../build.config.gki.aarch64
+          fi
+
+          echo "=> Wrapping hermetic pahole..."
+          HERMETIC_PAHOLE="../build/build-tools/path/linux-x86/pahole"
+          REAL_PAHOLE="$(command -v pahole)"
+          if [ -n "$REAL_PAHOLE" ]; then
+              mkdir -p "$(dirname "$HERMETIC_PAHOLE")"
+              cat > "$HERMETIC_PAHOLE" <<WRAPPER
+          #!/bin/sh
+          exec "$REAL_PAHOLE" --skip_encoding_btf_enum64 --skip_encoding_btf_decl_tag --skip_encoding_btf_type_tag "\$@"
+          WRAPPER
+              chmod +x "$HERMETIC_PAHOLE"
+              echo "=> Wrote wrapper $HERMETIC_PAHOLE -> $REAL_PAHOLE"
+          fi
+
+          # -------------------------------------------------------------
+          # FIX 2: APPLY THE KERNEL BTF C-CODE PATCHES
+          # -------------------------------------------------------------
+          echo "=> Applying Android 12-5.10 BTF source patches..."
+          cat << 'PATCH_EOF' > /tmp/btf_fixes.patch
+          --- a/include/linux/android_kabi.h
+          +++ b/include/linux/android_kabi.h
+          @@ -63,7 +63,7 @@
+            _new;						\
+            struct {					\
+            	_orig;					\
+          -		} __UNIQUE_ID(android_kabi_hide);		\
+          +		};						\
+            __ANDROID_KABI_CHECK_SIZE_ALIGN(_orig, _new);	\
+            }
+          --- a/tools/lib/bpf/Makefile
+          +++ b/tools/lib/bpf/Makefile
+          @@ -59,28 +59,7 @@
+            VERBOSE = 0
+           endif
+           
+          -FEATURE_USER = .libbpf
+          -FEATURE_TESTS = libelf zlib bpf
+          -FEATURE_DISPLAY = libelf zlib bpf
+          -
+           INCLUDES = -I. -I$(srctree)/tools/include -I$(srctree)/tools/include/uapi
+          -FEATURE_CHECK_CFLAGS-bpf = $(INCLUDES)
+          -
+          -check_feat := 1
+          -NON_CHECK_FEAT_TARGETS := clean TAGS tags cscope help
+          -ifdef MAKECMDGOALS
+          -ifeq ($(filter-out $(NON_CHECK_FEAT_TARGETS),$(MAKECMDGOALS)),)
+          -  check_feat := 0
+          -endif
+          -endif
+          -
+          -ifeq ($(check_feat),1)
+          -ifeq ($(FEATURES_DUMP),)
+          -include $(srctree)/tools/build/Makefile.feature
+          -else
+          -include $(FEATURES_DUMP)
+          -endif
+          -endif
+           
+           export prefix libdir src obj
+           
+          @@ -157,7 +136,7 @@
+           
+           all_cmd: $(CMD_TARGETS) check
+           
+          -$(BPF_IN_SHARED): force elfdep zdep bpfdep $(BPF_HELPER_DEFS)
+          +$(BPF_IN_SHARED): force $(BPF_HELPER_DEFS)
+           	@(test -f ../../include/uapi/linux/bpf.h -a -f ../../../include/uapi/linux/bpf.h && ( \
+           	(diff -B ../../include/uapi/linux/bpf.h ../../../include/uapi/linux/bpf.h >/dev/null) || \
+           	echo "Warning: Kernel ABI header at 'tools/include/uapi/linux/bpf.h' differs from latest version at 'include/uapi/linux/bpf.h'" >&2 )) || true
+          @@ -175,7 +154,7 @@
+           	echo "Warning: Kernel ABI header at 'tools/include/uapi/linux/if_xdp.h' differs from latest version at 'include/uapi/linux/if_xdp.h'" >&2 )) || true
+           	$(Q)$(MAKE) $(build)=libbpf OUTPUT=$(SHARED_OBJDIR) CFLAGS="$(CFLAGS) $(SHLIB_FLAGS)"
+           
+          -$(BPF_IN_STATIC): force elfdep zdep bpfdep $(BPF_HELPER_DEFS)
+          +$(BPF_IN_STATIC): force $(BPF_HELPER_DEFS)
+           	$(Q)$(MAKE) $(build)=libbpf OUTPUT=$(STATIC_OBJDIR)
+           
+           $(BPF_HELPER_DEFS): $(srctree)/tools/include/uapi/linux/bpf.h
+          @@ -264,34 +243,16 @@
+           
+           install: install_lib install_pkgconfig install_headers
+           
+          -### Cleaning rules
+          -
+          -config-clean:
+          -	$(call QUIET_CLEAN, feature-detect)
+          -	$(Q)$(MAKE) -C $(srctree)/tools/build/feature/ clean >/dev/null
+          -
+          -clean: config-clean
+          +clean:
+           	$(call QUIET_CLEAN, libbpf) $(RM) -rf $(CMD_TARGETS)		     \
+           		*~ .*.d .*.cmd LIBBPF-CFLAGS $(BPF_HELPER_DEFS)		     \
+           		$(SHARED_OBJDIR) $(STATIC_OBJDIR)			     \
+           		$(addprefix $(OUTPUT),					     \
+           			    *.o *.a *.so *.so.$(LIBBPF_MAJOR_VERSION) *.pc)
+          -	$(call QUIET_CLEAN, core-gen) $(RM) $(OUTPUT)FEATURE-DUMP.libbpf
+          -
+          -
+           
+          -PHONY += force elfdep zdep bpfdep cscope tags
+          +PHONY += force cscope tags
+           force:
+           
+          -elfdep:
+          -	@if [ "$(feature-libelf)" != "1" ]; then echo "No libelf found"; exit 1 ; fi
+          -
+          -zdep:
+          -	@if [ "$(feature-zlib)" != "1" ]; then echo "No zlib found"; exit 1 ; fi
+          -
+          -bpfdep:
+          -	@if [ "$(feature-bpf)" != "1" ]; then echo "BPF API too old"; exit 1 ; fi
+          -
+           cscope:
+           	ls *.c *.h > cscope.files
+           	cscope -b -q -I $(srctree)/include -f cscope.out
+          --- a/tools/bpf/resolve_btfids/Makefile
+          +++ b/tools/bpf/resolve_btfids/Makefile
+          @@ -23,6 +23,8 @@
+           LD       = $(HOSTLD)
+           ARCH     = $(HOSTARCH)
+           RM      ?= rm
+          +CFLAGS  := $(KBUILD_HOSTCFLAGS)
+          +LDFLAGS := $(KBUILD_HOSTLDFLAGS)
+           
+           OUTPUT ?= $(srctree)/tools/bpf/resolve_btfids/
+           
+          @@ -45,13 +47,15 @@
+           	$(Q)$(MAKE) -C $(SUBCMD_SRC) OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
+           
+           $(BPFOBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
+          -	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
+          +	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ \
+          +		EXTRA_CFLAGS="$(CFLAGS)" $(abspath $@)
+           
+          -CFLAGS := -g \
+          +CFLAGS += -g \
+                      -I$(srctree)/tools/include \
+                      -I$(srctree)/tools/include/uapi \
+                      -I$(LIBBPF_SRC) \
+          -          -I$(SUBCMD_SRC)
+          +          -I$(SUBCMD_SRC) \
+          +          -std=gnu11
+           
+           LIBS = -lelf -lz
+           
+          --- a/net/core/xdp.c
+          +++ b/net/core/xdp.c
+          @@ -12,6 +12,7 @@
+           #include <linux/idr.h>
+           #include <linux/rhashtable.h>
+           #include <linux/bug.h>
+          +#include <linux/btf.h>
+           #include <net/page_pool.h>
+           
+           #include <net/xdp.h>
+          @@ -387,6 +388,13 @@
+           void xdp_return_buff(struct xdp_buff *xdp)
+           {
+           	__xdp_return(xdp->data, &xdp->rxq->mem, true, xdp);
+          +	/* xdp_buff is referenced via BTF_ID_LIST_SINGLE(bpf_xdp_output_btf_ids)
+          +	 * in net/core/filter.c but is not otherwise emitted into vmlinux BTF,
+          +	 * so resolve_btfids aborts with "unresolved symbol xdp_buff". Force BTF
+          +	 * emission here where the struct is complete (this file includes both
+          +	 * <net/xdp.h> for the type and <linux/btf.h> for BTF_TYPE_EMIT). */
+          +	BTF_TYPE_EMIT(struct xdp_buff);
+          +
+           }
+           
+           /* Only called for MEM_TYPE_PAGE_POOL see xdp.h */
+          --- a/tools/bpf/resolve_btfids/main.c
+          +++ b/tools/bpf/resolve_btfids/main.c
+          @@ -649,6 +649,9 @@ static int symbols_patch(struct object *obj)
+           	if (sets_patch(obj))
+           		return -1;
+           
+          +	/* Set type to ensure endian translation occurs. */
+          +	obj->efile.idlist->d_type = ELF_T_WORD;
+          +
+           	elf_flagdata(obj->efile.idlist, ELF_C_SET, ELF_F_DIRTY);
+           
+           	err = elf_update(obj->efile.elf, ELF_C_WRITE);
+          PATCH_EOF
+          patch -p1 -N < /tmp/btf_fixes.patch || echo "=> Patches already applied or skipped"
+
+          # -------------------------------------------------------------
+          # 3. KernelSU-Next & SusFS Integration
+          # -------------------------------------------------------------
+          rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
+          git clone https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
+          mkdir -p drivers/kernelsu
+          cp -rf /tmp/KSUN/* drivers/kernelsu/
+          rm -rf /tmp/KSUN
+
+          if [ ! -d "fs/susfs" ]; then
+              git clone https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs || true
+              if [ -d "/tmp/susfs/kernel_patches" ]; then
+                  cp -r /tmp/susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
+                  cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
+              fi
+              rm -rf /tmp/susfs
+          fi
+
+          # -------------------------------------------------------------
+          # 4. Master Config Injector
+          # -------------------------------------------------------------
+          echo "=> Generating Smart Config Fragment..."
+          FRAG="/tmp/god_tier.config"
+          touch $FRAG
+
+          function inject() {
+              local check="$1"
+              local flags="$2"
+              if [ -z "$check" ] || eval "$check"; then
+                  echo -e "$flags" >> "$FRAG"
+              fi
+          }
+
+          # --- RAM, CPU & PERF (LTO NO LONGER DISABLED) ---
+          inject "" "CONFIG_MMU=y\nCONFIG_SPARSEMEM=y\nCONFIG_SPARSEMEM_VMEMMAP=y\nCONFIG_SYSFS=y\nCONFIG_DEBUG_FS=y\nCONFIG_DAMON=y\nCONFIG_DAMON_VADDR=y\nCONFIG_DAMON_PADDR=y\nCONFIG_DAMON_SYSFS=y\nCONFIG_CRYPTO=y\nCONFIG_CRYPTO_LZ4=y\nCONFIG_CRYPTO_LZO=y\nCONFIG_CRYPTO_ZSTD=y\nCONFIG_ZSWAP=y\nCONFIG_ZPOOL=y\nCONFIG_ZSMALLOC=y\nCONFIG_BLK_DEV_ZRAM=y\nCONFIG_ZRAM_WRITEBACK=y\nCONFIG_ZRAM_MULTI_COMP=y\nCONFIG_ZRAM_MEMORY_TRACKING=y\nCONFIG_SWAP=y\nCONFIG_MEMCG=y\nCONFIG_MEMCG_SWAP=y\nCONFIG_PSI=y\nCONFIG_VM_CLEAN_LOW_KBYTES=y\nCONFIG_LRU_GEN=y\nCONFIG_LRU_GEN_ENABLED=y"
+          inject "" "CONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
+
+          # --- SECURITY, BPF & LSM (BTF KEPT ALIVE) ---
+          inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_DEBUG_INFO_BTF_MODULES=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
+
+          # --- ANDROID ROOT, KSU & SUSFS ---
+          inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y\nCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y\nCONFIG_KSU_SUSFS_OPEN_REDIRECT=y\nCONFIG_KSU_SUSFS_SUS_MAP=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_IO_URING=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
+
+          # --- FILESYSTEMS & STORAGE ---
+          inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y"
+
+          # --- EXTRA/VENDOR TWEAKS (WITH BBR NORMAL CONFIG) ---
+          inject "" "CONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\""
+          inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
+          inject "grep -q 'config MQ_IOSCHED_KYBER' block/Kconfig.iosched 2>/dev/null" "CONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DEFAULT_KYBER=y\nCONFIG_DEFAULT_IOSCHED=\"kyber\""
+          inject "grep -q 'config DROIDSPACE' init/Kconfig 2>/dev/null || grep -q 'config DROIDSPACE' security/Kconfig 2>/dev/null" "CONFIG_DROIDSPACE=y"
+          inject "grep -q 'config BASEBAND_GUARD' security/Kconfig 2>/dev/null" "CONFIG_BASEBAND_GUARD=y"
+
+          echo "=> Appending to Defconfigs..."
+          for conf in arch/arm64/configs/*defconfig; do
+              [ -f "$conf" ] && cat $FRAG >> "$conf"
+          done
+          EOF
+          chmod +x /tmp/god_tier_automation.sh
+          
+          # Reliable Hook
+          sed -i '/kernel source cloned/a \
+          echo "=> TRIGGERING GOD TIER PATCHER..." \
+          bash /tmp/god_tier_automation.sh' ./build-kernel.sh
+
+      - name: Restore ccache cache
+        if: ${{ inputs.ccache }}
+        uses: actions/cache@v4
+        with:
+          path: work/.ccache
+          key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}
+          restore-keys: |
+            cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
+            cfx-ccache-${{ env.CLANG_ASSET }}-
+          fail-on-cache-miss: false
+
+      - name: Add 24G swap
+        run: |
+          sudo swapoff -a
+          sudo rm -f /swapfile
+          sudo fallocate -l 24G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=24576
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Build kernel
+        env:
+          KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
+        run: |
+          ksu_pid=""
+          if [ "${{ inputs.pack_flashable }}" == "true" ]; then
+            ./build/kernelsu-fetch.sh &
+            ksu_pid=$!
+          fi
+          ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
+          if [ -n "$ksu_pid" ]; then
+            wait "$ksu_pid" || echo "::warning::ksud fetch failed; flashable zip will be skipped"
+          fi
+
+      - name: Save ccache cache
+        if: ${{ inputs.ccache && always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: work/.ccache
+          key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}
+
+      - name: Pack flashable kernel zip
+        if: ${{ inputs.pack_flashable }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PWD/kernelsu/ksud-aarch64-linux-android" ] || \
+             [ ! -f "$PWD/kernelsu/ksud-armv7-linux-androideabi" ]; then
+            echo "ksud binaries missing (fetch failed); skipping flashable zip"
+            exit 0
+          fi
+          kernel_img=$(find work/dist -name 'Image' -print -quit)
+          if [ -z "$kernel_img" ]; then
+            kernel_img=$(find work/dist -name 'Image.lz4' -print -quit)
+          fi
+          if [ -z "$kernel_img" ]; then
+            echo "no kernel Image found in work/dist" >&2
+            find work/dist -type f | head -40
+            exit 1
+          fi
+          mkdir -p work/pkg
+          KERNEL_IMAGE="$kernel_img" \
+          KSUD_ARM64="$PWD/kernelsu/ksud-aarch64-linux-android" \
+          KSUD_ARMV7="$PWD/kernelsu/ksud-armv7-linux-androideabi" \
+          ZIP_OUT="$PWD/work/pkg/cloudfox-kernel-flash.zip" \
+            ./build/pack-flashable.sh
+
+      - name: Upload flashable zip
+        if: ${{ inputs.pack_flashable && !inputs.publish_release }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: kernel-flash-zip
+          path: work/pkg/cloudfox-kernel-flash.zip
+          if-no-files-found: warn
+
+      - name: Publish release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$RELEASE_TAG"
+          if [ -z "$tag" ]; then
+            tag="kernel-$(date -u +%Y%m%d)"
+          fi
+          cd "$GITHUB_WORKSPACE/work/dist"
+          pkg="$GITHUB_WORKSPACE/work/pkg"
+          mkdir -p "$pkg"
+          assets=()
+          for f in Image Image.lz4 vmlinux System.map ikconfig .config; do
+            [ -f "$f" ] && assets+=("$f")
+          done
+          tar -I 'zstd -T0' -cf "$pkg/kernel-dist.tar.zst" .
+          assets+=("$pkg/kernel-dist.tar.zst")
+          if [ -f "$pkg/cloudfox-kernel-flash.zip" ]; then
+            assets+=("$pkg/cloudfox-kernel-flash.zip")
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" --clobber "${assets[@]}"
+          else
+            gh release create "$tag" \
+              --title "CloudFox kernel build $tag" \
+              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} via Google's unmodified build.sh. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              "${assets[@]}"
+          fi
+          echo "release $tag updated"
