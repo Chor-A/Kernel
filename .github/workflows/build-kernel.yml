@@ -89,7 +89,7 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install Host Dependencies & Fix Utilities (dd, coreutils, etc.)
+      - name: Install Host Dependencies (pahole, dwarves, coreutils, etc.)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -105,8 +105,6 @@ jobs:
             libncurses-dev \
             zlib1g-dev \
             pkg-config
-          sudo ln -sf /usr/bin/dd /bin/dd || true
-          sudo ln -sf /usr/bin/printf /bin/printf || true
 
       - name: Setup God-Tier Automation Engine 🚀
         run: |
@@ -127,6 +125,10 @@ jobs:
               echo "=> Cannot find kernel source. Skipping patch."
               exit 0
           fi
+
+          # 0. BYPASS ANDROID HERMETIC PATH (CRITICAL FIX FOR dd & pahole)
+          echo "=> Forcing host utilities into build path..."
+          echo 'export PATH=$PATH:/usr/bin:/bin' >> ../build.config.common
 
           # 1. Complete KSU Purge & Proper KSUN Inject into drivers/kernelsu
           echo "=> Purging old KSU remnants..."
@@ -149,7 +151,7 @@ jobs:
               rm -rf /tmp/susfs
           fi
 
-          # 3. Master Config Injector
+          # 3. Master Config Injector (Exact Mirror of your Blueprint)
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
           touch $FRAG
@@ -168,8 +170,8 @@ jobs:
           # --- 2. CPU SCHEDULER, CASS & PERFORMANCE ---
           inject "" "CONFIG_LTO_NONE=y\nCONFIG_LTO_CLANG_NONE=y\nCONFIG_SMP=y\nCONFIG_SCHED_MC=y\nCONFIG_CGROUP_SCHED=y\nCONFIG_FAIR_GROUP_SCHED=y\nCONFIG_RT_GROUP_SCHED=y\nCONFIG_CPU_FREQ=y\nCONFIG_CPU_FREQ_STAT=y\nCONFIG_CPU_FREQ_GOV_SCHEDUTIL=y\nCONFIG_ENERGY_AWARE=y\nCONFIG_SCHED_CASS=y\nCONFIG_UCLAMP_TASK=y\nCONFIG_UCLAMP_TASK_GROUP=y\nCONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y\nCONFIG_OPTIMIZE_INLINING=y\nCONFIG_HZ_1000=y\nCONFIG_JUMP_LABEL=y"
 
-          # --- 3. SECURITY, BPF & LSM ---
-          inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
+          # --- 3. SECURITY, BPF & LSM (ADDED DEBUG_INFO_SPLIT AS PER RESEARCH) ---
+          inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
 
           # --- 4. ANDROID ROOT & CORE IO ---
           inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_IO_URING=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
