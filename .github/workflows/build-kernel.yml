@@ -137,23 +137,32 @@ jobs:
           fi
 
           # -------------------------------------------------------------
-          # 0. CHERRY-PICK TEMPLAR KERNEL COMMITS
+          # 0. CHERRY-PICK TEMPLAR KERNEL COMMITS (Individual Safe-Mode)
           # -------------------------------------------------------------
-          echo "=> Cherry-picking Templar Kernel commits (Skipping le9uo)..."
+          echo "=> Cherry-picking Templar Kernel commits individually..."
           git config --global user.email "bot@example.com"
           git config --global user.name "GitHub Action Bot"
           git remote add templar https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git || true
           git fetch templar
           
-          # Temporarily disable crash-on-error so a Git conflict doesn't fail the build instantly
-          set +e 
-          git cherry-pick 847bd4d..2bc01aa
+          # Exact 14 commits (skipping le9uo)
+          COMMITS=(
+            ba72013 50ce340 7790e8f 3a40028 d57c5b1 b2de52b d119c1d
+            800bd4c fadfae0 e08a6d3 8be64ff 895e2ed 194513b 2bc01aa
+          )
           
-          if [ $? -ne 0 ]; then
-              echo "::warning::Cherry-pick hit a conflict! Aborting the cherry-pick to keep kernel source clean."
-              git cherry-pick --abort
-          fi
-          # Re-enable crash-on-error for the rest of your automation
+          set +e 
+          for hash in "${COMMITS[@]}"; do
+              echo "-> Attempting to pick $hash..."
+              git cherry-pick $hash
+              
+              if [ $? -ne 0 ]; then
+                  echo "::warning::Conflict detected on $hash! Skipping this specific commit."
+                  git cherry-pick --abort
+              else
+                  echo "-> Successfully picked $hash"
+              fi
+          done
           set -e
 
           # -------------------------------------------------------------
