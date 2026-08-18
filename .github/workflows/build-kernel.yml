@@ -144,13 +144,21 @@ jobs:
           git config --global user.name "GitHub Action Bot"
           git remote add templar https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git || true
           
-          # Force fetch the exact branch where the commits exist
-          git fetch templar Linux-Staging
+          # Fetch the exact branch from the screenshot
+          git fetch templar Templar-LinuxStable
           
-          # Exact 14 commits (skipping le9uo)
+          # Cleaned commits list (Adios, Vorpal, and BBRplus removed)
           COMMITS=(
-            ba72013 50ce340 7790e8f 3a40028 d57c5b1 b2de52b d119c1d
-            800bd4c fadfae0 e08a6d3 8be64ff 895e2ed 194513b 2bc01aa
+            647fd46 # Workingset protection
+            ba72013 # IPC Support
+            50ce340 # BBRv3 backport
+            7790e8f # BBRv3 parameters
+            b2de52b # SSG I/O scheduler
+            8bc9efc # EEVDF scheduler
+            f65f0f6 # BORE tuning
+            3be64ff # NoMount VFS
+            096c2a4 # NTSYNC
+            f44513b # BBR min_rtt
           )
           
           set +e 
@@ -394,8 +402,8 @@ jobs:
           # --- EXTRA/VENDOR TWEAKS ---
           inject "" "CONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\"\nCONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DROIDSPACE=y\nCONFIG_BASEBAND_GUARD=y"
 
-          # --- STEAMBOT12 CHERRY-PICK TWEAKS ---
-          inject "" "CONFIG_TCP_CONG_BBRPLUS=y\nCONFIG_SCHED_BORE=y\nCONFIG_NTSYNC=y\nCONFIG_NOMOUNT=y\nCONFIG_IOSCHED_ADIOS=y\nCONFIG_IOSCHED_SSG=y\nCONFIG_CPU_FREQ_GOV_VORPAL=y\nCONFIG_WORKINGSET_PROTECTION=y"
+          # --- STEAMBOT12 CHERRY-PICK TWEAKS (Adios, Vorpal, BBRplus removed) ---
+          inject "" "CONFIG_SCHED_BORE=y\nCONFIG_NTSYNC=y\nCONFIG_NOMOUNT=y\nCONFIG_IOSCHED_SSG=y\nCONFIG_WORKINGSET_PROTECTION=y"
 
           # --- LZ4KDR (user confirmed working) ---
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
@@ -442,7 +450,6 @@ jobs:
       - name: Build kernel
         env:
           KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
-          # Bypass Google's ABI Symbol List Check 
           SKIP_ABI_CHECKS: 1
           KMI_SYMBOL_LIST_STRICT_MODE: 0
         run: |
