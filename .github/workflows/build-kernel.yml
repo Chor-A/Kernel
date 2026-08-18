@@ -145,7 +145,7 @@ jobs:
           git remote add templar https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git || true
           git fetch templar Templar-LinuxStable
           
-          # EEVDF, BORE, aur NoMount ko list se hata diya gaya hai taaki wo custom patch se lag sakein
+          # EEVDF, BORE, aur NoMount custom patch folder se lagenge
           SAFE_COMMITS=(
             b476d4d # mm: le9uo: enable workingset protection
             ba72088 # kernel: Enable IPC support for Droidspaces
@@ -174,27 +174,32 @@ jobs:
           set -e
 
           # -------------------------------------------------------------
-          # 2. APPLY CUSTOM PATCHES FROM GITHUB REPO FOLDER
+          # 2. APPLY CUSTOM PATCHES WITH ERROR LOGGING (.rej files)
           # -------------------------------------------------------------
           echo "=> Applying Custom Patches (EEVDF, BORE, NoMount)..."
-          # GITHUB_WORKSPACE woh root folder hai jahan pehla step checkout karta hai
           PATCH_DIR="${GITHUB_WORKSPACE}/.github/workflows/kernel_patches"
           
           if [ -d "$PATCH_DIR" ]; then
-              # Sort patches alphabetically so 01-, 02-, 03- order is maintained
               for patch_file in $(ls "$PATCH_DIR"/*.patch | sort); do
                   [ -e "$patch_file" ] || continue
                   patch_name=$(basename "$patch_file")
+                  echo "======================================================="
                   echo "-> Injecting Patch: $patch_name..."
                   
-                  # Apply patch using -F3 (Fuzz 3) to bypass minor line offset conflicts
                   if patch -p1 -F3 --no-backup-if-mismatch < "$patch_file"; then
                       echo "✅ Successfully applied $patch_name"
                   else
-                      echo "⚠️ WARNING: $patch_name failed to apply cleanly! Discarding changes."
+                      echo "⚠️ WARNING: $patch_name failed to apply cleanly!"
+                      echo "=> 🔍 PRINTING REJECTED HUNKS (.rej files) FOR DEBUGGING:"
+                      
+                      # Find all rejected chunks and print them to the console
+                      find . -name "*.rej" -print -exec cat {} \;
+                      
+                      echo "=> 🧹 Cleaning up broken patch files so the build can continue..."
                       git checkout . || true
                       git clean -fd || true
                   fi
+                  echo "======================================================="
               done
           else
               echo "=> WARNING: 'kernel_patches' directory not found at $PATCH_DIR"
