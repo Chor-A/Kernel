@@ -137,41 +137,35 @@ jobs:
           fi
 
           # -------------------------------------------------------------
-          # 0. CHERRY-PICK TEMPLAR KERNEL COMMITS (HD Verified Hashes)
+          # 1. CHERRY-PICK SAFE COMMITS
           # -------------------------------------------------------------
-          echo "=> Cherry-picking Templar Kernel commits individually..."
+          echo "=> Cherry-picking Safe Templar Kernel commits..."
           git config --global user.email "bot@example.com"
           git config --global user.name "GitHub Action Bot"
           git remote add templar https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git || true
-          
-          # Fetch the exact branch
           git fetch templar Templar-LinuxStable
           
-          # 100% Verified HD Hashes (Adios, Vorpal, BBRplus removed)
-          COMMITS=(
+          # EEVDF, BORE, aur NoMount ko list se hata diya gaya hai taaki wo custom patch se lag sakein
+          SAFE_COMMITS=(
             b476d4d # mm: le9uo: enable workingset protection
             ba72088 # kernel: Enable IPC support for Droidspaces
             59ea343 # tcp: bbr: KMI-safe BBRv3 backport
             77964c8 # net: tcp_bbr: Comprehensive BBRv3 parameter optimization
             b2d457b # block: ssg: balanced I/O scheduler optimization
-            8c0ad4c # [BACKPORT] sched/fair: backport EEVDF scheduler
-            f65f096 # sched/fair: BORE 6.6.3 tuning
-            3be84ff # fs: nomount: add NoMount VFS
             096c2a4 # arm64: gki_defconfig: explicitly enable CONFIG_NTSYNC
             f94513b # tcp: bbr: restore upstream min_rtt
           )
           
           set +e 
-          for hash in "${COMMITS[@]}"; do
-              echo "-> Attempting to check and pick $hash..."
+          for hash in "${SAFE_COMMITS[@]}"; do
+              echo "-> Attempting to pick $hash..."
               if ! git rev-parse --verify --quiet "$hash^{commit}" >/dev/null; then
-                  echo "::warning::Commit $hash not found locally. Skipping safely."
+                  echo "::warning::Commit $hash not found locally. Skipping."
                   continue
               fi
-              
               git cherry-pick $hash
               if [ $? -ne 0 ]; then
-                  echo "::warning::Conflict detected on $hash! Skipping this specific commit."
+                  echo "::warning::Conflict detected on $hash! Aborting."
                   git cherry-pick --abort || true
               else
                   echo "-> Successfully picked $hash"
@@ -180,7 +174,34 @@ jobs:
           set -e
 
           # -------------------------------------------------------------
-          # FIX 1: BTF C-CODE PATCHES (KEEP android_kabi.h patch!)
+          # 2. APPLY CUSTOM PATCHES FROM GITHUB REPO FOLDER
+          # -------------------------------------------------------------
+          echo "=> Applying Custom Patches (EEVDF, BORE, NoMount)..."
+          # GITHUB_WORKSPACE woh root folder hai jahan pehla step checkout karta hai
+          PATCH_DIR="${GITHUB_WORKSPACE}/.github/workflows/kernel_patches"
+          
+          if [ -d "$PATCH_DIR" ]; then
+              # Sort patches alphabetically so 01-, 02-, 03- order is maintained
+              for patch_file in $(ls "$PATCH_DIR"/*.patch | sort); do
+                  [ -e "$patch_file" ] || continue
+                  patch_name=$(basename "$patch_file")
+                  echo "-> Injecting Patch: $patch_name..."
+                  
+                  # Apply patch using -F3 (Fuzz 3) to bypass minor line offset conflicts
+                  if patch -p1 -F3 --no-backup-if-mismatch < "$patch_file"; then
+                      echo "✅ Successfully applied $patch_name"
+                  else
+                      echo "⚠️ WARNING: $patch_name failed to apply cleanly! Discarding changes."
+                      git checkout . || true
+                      git clean -fd || true
+                  fi
+              done
+          else
+              echo "=> WARNING: 'kernel_patches' directory not found at $PATCH_DIR"
+          fi
+
+          # -------------------------------------------------------------
+          # 3. FIX BTF C-CODE PATCHES
           # -------------------------------------------------------------
           echo "=> Applying Android 12-5.10 BTF source patches..."
           cat << 'PATCH_EOF' > /tmp/btf_fixes.patch
@@ -350,7 +371,7 @@ jobs:
           patch -p1 -N < /tmp/btf_fixes.patch || echo "=> Patches already applied or skipped"
 
           # -------------------------------------------------------------
-          # 2. KernelSU-Next & SusFS Integration
+          # 4. KernelSU-Next & SusFS Integration
           # -------------------------------------------------------------
           rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
           git clone --depth 1 https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
@@ -370,14 +391,14 @@ jobs:
           fi
 
           # -------------------------------------------------------------
-          # 2.5 FORCE PAHOLE INTO HERMETIC PATH FOR BTF
+          # 5. FORCE PAHOLE INTO HERMETIC PATH FOR BTF
           # -------------------------------------------------------------
           echo "=> Bypassing Google's hermetic PATH to inject Pahole v1.31..."
           cp /usr/local/bin/pahole ../build/build-tools/path/linux-x86/pahole || true
           chmod +x ../build/build-tools/path/linux-x86/pahole || true
 
           # -------------------------------------------------------------
-          # 3. Master Config Injector (Safe flags only + KernelSU/SusFS + LZ4KDR)
+          # 6. Master Config Injector
           # -------------------------------------------------------------
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
@@ -406,7 +427,7 @@ jobs:
           # --- EXTRA/VENDOR TWEAKS ---
           inject "" "CONFIG_TCP_CONG_BBR=y\nCONFIG_DEFAULT_BBR=y\nCONFIG_DEFAULT_TCP_CONG=\"bbr\"\nCONFIG_MQ_IOSCHED_KYBER=y\nCONFIG_DROIDSPACE=y\nCONFIG_BASEBAND_GUARD=y"
 
-          # --- STEAMBOT12 CHERRY-PICK TWEAKS (Adios, Vorpal, BBRplus removed) ---
+          # --- STEAMBOT12 CHERRY-PICK TWEAKS ---
           inject "" "CONFIG_SCHED_BORE=y\nCONFIG_NTSYNC=y\nCONFIG_NOMOUNT=y\nCONFIG_IOSCHED_SSG=y\nCONFIG_WORKINGSET_PROTECTION=y"
 
           # --- LZ4KDR (user confirmed working) ---
