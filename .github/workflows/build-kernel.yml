@@ -356,6 +356,13 @@ jobs:
           fi
 
           # -------------------------------------------------------------
+          # 2.5 FORCE PAHOLE INTO HERMETIC PATH FOR BTF
+          # -------------------------------------------------------------
+          echo "=> Bypassing Google's hermetic PATH to inject Pahole v1.31..."
+          cp /usr/local/bin/pahole ../build/build-tools/path/linux-x86/pahole || true
+          chmod +x ../build/build-tools/path/linux-x86/pahole || true
+
+          # -------------------------------------------------------------
           # 3. Master Config Injector (Safe flags only + KernelSU/SusFS + LZ4KDR)
           # -------------------------------------------------------------
           echo "=> Generating Smart Config Fragment..."
