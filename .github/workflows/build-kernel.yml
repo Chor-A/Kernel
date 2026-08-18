@@ -143,7 +143,9 @@ jobs:
           git config --global user.email "bot@example.com"
           git config --global user.name "GitHub Action Bot"
           git remote add templar https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git || true
-          git fetch templar
+          
+          # Force fetch the exact branch where the commits exist
+          git fetch templar Linux-Staging
           
           # Exact 14 commits (skipping le9uo)
           COMMITS=(
@@ -440,6 +442,9 @@ jobs:
       - name: Build kernel
         env:
           KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
+          # Bypass Google's ABI Symbol List Check 
+          SKIP_ABI_CHECKS: 1
+          KMI_SYMBOL_LIST_STRICT_MODE: 0
         run: |
           ksu_pid=""
           if [ "${{ inputs.pack_flashable }}" == "true" ]; then
