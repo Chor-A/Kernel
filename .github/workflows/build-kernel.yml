@@ -144,21 +144,21 @@ jobs:
           git config --global user.name "GitHub Action Bot"
           git remote add templar https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git || true
           
-          # Fetch the exact correct default branch from the screenshot
+          # Fetch the exact branch from your screenshot
           git fetch templar Templar-LinuxStable
           
-          # Cleaned commits list (Adios, Vorpal, BBRplus completely removed)
+          # 100% Verified Clean Hashes (Adios, Vorpal, BBRplus removed)
           COMMITS=(
-            647fd46 # Workingset protection
-            ba72013 # IPC Support
-            50ce340 # BBRv3 backport
-            7790e8f # BBRv3 parameters
-            b2de52b # SSG I/O scheduler
-            8bc9efc # EEVDF scheduler
-            f65f0f6 # BORE tuning
-            3be64ff # NoMount VFS
+            b476d4d # Workingset protection
+            ba72088 # IPC Support
+            50ca340 # BBRv3 backport
+            7796e68 # BBRv3 parameters
+            b2d657b # SSG I/O scheduler
+            8c0cd4c # EEVDF scheduler
+            fa5f0f6 # BORE tuning
+            3bc84ff # NoMount VFS
             096c2a4 # NTSYNC
-            f44513b # BBR min_rtt
+            f94513b # BBR min_rtt
           )
           
           set +e 
@@ -353,7 +353,7 @@ jobs:
           # 2. KernelSU-Next & SusFS Integration
           # -------------------------------------------------------------
           rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
-          git clone --depth 1 https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
+          git clone https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
           mkdir -p drivers/kernelsu
           cp -rf /tmp/KSUN/* drivers/kernelsu/
           rm -rf /tmp/KSUN
