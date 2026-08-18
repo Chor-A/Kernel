@@ -144,8 +144,8 @@ jobs:
           git config --global user.name "GitHub Action Bot"
           git remote add templar https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git || true
           
-          # Fetch full remote history to ensure all commits are accessible
-          git fetch templar
+          # Fetch the exact correct default branch from the screenshot
+          git fetch templar Templar-LinuxStable
           
           # Cleaned commits list (Adios, Vorpal, BBRplus completely removed)
           COMMITS=(
@@ -353,7 +353,7 @@ jobs:
           # 2. KernelSU-Next & SusFS Integration
           # -------------------------------------------------------------
           rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
-          git clone https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
+          git clone --depth 1 https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
           mkdir -p drivers/kernelsu
           cp -rf /tmp/KSUN/* drivers/kernelsu/
           rm -rf /tmp/KSUN
