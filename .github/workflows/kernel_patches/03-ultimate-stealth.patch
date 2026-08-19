@@ -1,24 +1,24 @@
 From ad58fa8f903823485ba3c604be1b2c45ab837d38 Mon Sep 17 00:00:00 2001
 From: Stealth Developer <stealth@localhost>
 Date: Wed, 19 Aug 2026 12:00:00 +0000
-Subject: [PATCH] core: stealth implementations
+Subject: [PATCH] core: all-in-one stealth and custom rom spoofing
 
-1. fs/proc/cmdline.c: Spoofs verifiedbootstate and device_state for Play Integrity.
-2. fs/proc/array.c: Hardcodes TracerPid to 0 for non-root users.
+1. fs/proc/cmdline.c: Spoofs verifiedbootstate, device_state, selinux, and userdebug.
+2. fs/proc/array.c: Hardcodes TracerPid to 0 for non-root users to defeat Anti-Cheats.
 3. scripts/setlocalversion: Immediately returns empty to prevent '-dirty' append.
 
 Signed-off-by: Stealth Developer <stealth@localhost>
 ---
- fs/proc/array.c         |  3 +++
- fs/proc/cmdline.c       | 23 ++++++++++++++++++++++-
+ fs/proc/array.c         |  4 ++++
+ fs/proc/cmdline.c       | 30 +++++++++++++++++++++++++++++-
  scripts/setlocalversion |  1 +
- 3 files changed, 26 insertions(+), 1 deletion(-)
+ 3 files changed, 34 insertions(+), 1 deletion(-)
 
 diff --git a/fs/proc/array.c b/fs/proc/array.c
 index a879cf1b9cf2..3eb492f2fcde 100644
 --- a/fs/proc/array.c
 +++ b/fs/proc/array.c
-@@ -213,6 +213,9 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
+@@ -213,6 +213,10 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
  	if (unlikely(tracer) && p->ptrace) {
  		tpid = task_pid_nr_ns(tracer, ns);
  	}
@@ -33,7 +33,7 @@ diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
 index a8e2fa51a37c..fc7dbe7cf823 100644
 --- a/fs/proc/cmdline.c
 +++ b/fs/proc/cmdline.c
-@@ -2,12 +2,33 @@
+@@ -2,11 +2,40 @@
  #include <linux/fs.h>
  #include <linux/init.h>
  #include <linux/proc_fs.h>
@@ -58,6 +58,12 @@ index a8e2fa51a37c..fc7dbe7cf823 100644
 +			strncpy(ptr + 25, "1", 1);
 +		if ((ptr = strstr(copy, "androidboot.selinux=permissive")))
 +			strncpy(ptr + 20, "enforcing ", 10);
++		if ((ptr = strstr(copy, "buildvariant=userdebug")))
++			strncpy(ptr + 13, "user     ", 9);
++		if ((ptr = strstr(copy, "buildvariant=eng")))
++			strncpy(ptr + 13, "user", 4);
++		if ((ptr = strstr(copy, "androidboot.mode=custom")))
++			strncpy(ptr + 17, "normal", 6);
 +
 +		seq_puts(m, copy);
 +		kfree(copy);
