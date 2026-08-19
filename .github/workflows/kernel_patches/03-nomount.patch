@@ -1446,199 +1446,199 @@ index 000000000000..b8a830950de7
 +    return 0;
 +}
 +
- static int nomount_genl_clear_rules(struct sk_buff *skb, struct genl_info *info)
- {
-     mutex_lock(&nomount_write_mutex);
-     __nomount_clear_all();
-     mutex_unlock(&nomount_write_mutex);
-     nm_info("Cleared all active rules and UIDs\n");
-     return 0;
- }
-
- static int nomount_genl_dump_rules(struct sk_buff *skb, struct netlink_callback *cb)
- {
-     struct nomount_rule *rule;
-     int idx = 0; void *hdr;
-     int start_idx = cb->args[0];
-
-     rcu_read_lock();
-     list_for_each_entry_rcu(rule, &nomount_rules_list, list) {
-         if (idx < start_idx) { idx++; continue; }
-
-         hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
-                           &nomount_genl_family, NLM_F_MULTI, NOMOUNT_CMD_GET_LIST);
-         if (!hdr)
-             break;
-
-         if (nla_put_string(skb, NOMOUNT_ATTR_VIRTUAL_PATH, rule->virtual_path) ||
-              nla_put_string(skb, NOMOUNT_ATTR_REAL_PATH, rule->real_path) ||
-              nla_put_u32(skb, NOMOUNT_ATTR_FLAGS, rule->flags)) {
-
-             genlmsg_cancel(skb, hdr);
-             break;
-         }
-
-         genlmsg_end(skb, hdr);
-         idx++;
-     }
-     rcu_read_unlock();
-
-     cb->args[0] = idx; 
-     
-     return skb->len;
- }
-
- static int nomount_genl_add_uid(struct sk_buff *skb, struct genl_info *info)
- {
-     unsigned int uid;
-     struct nomount_uid_node *entry;
-
-     if (!info->attrs[NOMOUNT_ATTR_UID])
-         return -EINVAL;
-
-     uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
-
-     if (nomount_is_uid_blocked(uid)) 
-         return -EEXIST;
-
-     entry = kmem_cache_alloc(nm_uid_cachep, GFP_KERNEL);
-     if (!entry) return -ENOMEM;
-     entry->uid = uid;
-     
-     mutex_lock(&nomount_write_mutex);
-     hash_add_rcu(nomount_uid_ht, &entry->node, uid);
-     atomic_inc(&nm_active_uids);
-     if (atomic_read(&nm_active_uids) == 1) static_branch_enable(&nomount_active_uids);
-     mutex_unlock(&nomount_write_mutex);
-     
-     nm_info("Successfully added blocked UID: %u\n", uid);
-     return 0;
- }
-
- static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
- {
-     unsigned int uid;
-     struct nomount_uid_node *entry;
-     struct hlist_node *tmp;
-     int bkt;
-     bool found = false;
-
-     if (!info->attrs[NOMOUNT_ATTR_UID])
-         return -EINVAL;
-
-     uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
-
-     mutex_lock(&nomount_write_mutex);
-     hash_for_each_safe(nomount_uid_ht, bkt, tmp, entry, node) {
-         if (entry->uid == uid) {
-             hash_del_rcu(&entry->node);
-             found = true;
-             break; 
-         }
-     }
-     atomic_dec(&nm_active_uids);
-     if (atomic_read(&nm_active_uids) == 0) static_branch_disable(&nomount_active_uids);
-     mutex_unlock(&nomount_write_mutex);
-
-     if (found && entry) {
-         synchronize_rcu();
-         kmem_cache_free(nm_uid_cachep, entry);
-     }
-
-     nm_info("Successfully remove blocked UID: %u\n", uid);
-     return found ? 0 : -ENOENT;
- }
-
- static int nomount_genl_get_version(struct sk_buff *skb, struct genl_info *info)
- {
-     struct sk_buff *msg;
-     void *hdr;
-     int ret;
-
-     msg = genlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
-     if (!msg) return -ENOMEM;
-
-     hdr = genlmsg_put_reply(msg, info, &nomount_genl_family, 0, info->genlhdr->cmd);
-     if (!hdr) {
-         nlmsg_free(msg);
-         return -EMSGSIZE;
-     }
-
-     ret = nla_put_u32(msg, NOMOUNT_ATTR_VERSION, NOMOUNT_VERSION);
-     if (ret) {
-         genlmsg_cancel(msg, hdr);
-         nlmsg_free(msg);
-         return ret;
-     }
-
-     genlmsg_end(msg, hdr);
-     return genlmsg_reply(msg, info);
- }
-
- static const struct nla_policy nomount_genl_policy[NOMOUNT_ATTR_MAX + 1] = {
-     [NOMOUNT_ATTR_VIRTUAL_PATH] = { .type = NLA_NUL_STRING, .len = PATH_MAX },
-     [NOMOUNT_ATTR_REAL_PATH]    = { .type = NLA_NUL_STRING, .len = PATH_MAX },
-     [NOMOUNT_ATTR_FLAGS]        = { .type = NLA_U32 },
-     [NOMOUNT_ATTR_UID]          = { .type = NLA_U32 },
-     [NOMOUNT_ATTR_VERSION]      = { .type = NLA_U32 },
-     [NOMOUNT_ATTR_PAYLOAD]      = { .type = NLA_BINARY },
- };
-
- static const struct genl_ops nomount_genl_ops[] = {
-     { .cmd = NOMOUNT_CMD_ADD_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_rule, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-     { .cmd = NOMOUNT_CMD_DEL_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_rule, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-     { .cmd = NOMOUNT_CMD_CLEAR_ALL, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_clear_rules, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-     { .cmd = NOMOUNT_CMD_ADD_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-     { .cmd = NOMOUNT_CMD_DEL_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-     { .cmd = NOMOUNT_CMD_GET_LIST, .flags = GENL_ADMIN_PERM, .doit = NULL, .dumpit = nomount_genl_dump_rules, NM_OPS_POLICY(nomount_genl_policy) },
-     { .cmd = NOMOUNT_CMD_GET_VERSION, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_get_version, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
- };
-
- static struct genl_family nomount_genl_family = {
-     .name = NOMOUNT_GENL_NAME,
-     .version = NOMOUNT_GENL_VERSION,
-     .maxattr = NOMOUNT_ATTR_MAX,
-     NM_FAMILY_POLICY(nomount_genl_policy)
-     .netnsok = true,
-     .module = THIS_MODULE,
-     .ops = nomount_genl_ops,
-     .n_ops = ARRAY_SIZE(nomount_genl_ops),
- };
-
- static int __init nomount_init(void) {
-     int ret;
-
-     hash_init(nomount_rules_ht);
-     hash_init(nomount_basenames_ht);
-     hash_init(nomount_uid_ht);
-     hash_init(nomount_inodes_ht);
-
-     nm_rule_cachep = kmem_cache_create("nm_rules", sizeof(struct nomount_rule), 0, SLAB_HWCACHE_ALIGN, NULL);
-     nm_dir_cachep = kmem_cache_create("nm_dirs", sizeof(struct nomount_dir_node), 0, SLAB_HWCACHE_ALIGN, NULL);
-     nm_uid_cachep = kmem_cache_create("nm_uids", sizeof(struct nomount_uid_node), 0, SLAB_HWCACHE_ALIGN, NULL);
-
-     if (!nm_rule_cachep || !nm_dir_cachep || !nm_uid_cachep) {
-         nm_err("Failed to allocate memory slab caches\n");
-         if (nm_rule_cachep) kmem_cache_destroy(nm_rule_cachep);
-         if (nm_dir_cachep) kmem_cache_destroy(nm_dir_cachep);
-         if (nm_uid_cachep) kmem_cache_destroy(nm_uid_cachep);
-         return -ENOMEM;
-     }
-
-     ret = genl_register_family(&nomount_genl_family);
-     if (ret) {
-         nm_err("Failed to register Generic Netlink family (err: %d)\n", ret);
-         kmem_cache_destroy(nm_rule_cachep);
-         kmem_cache_destroy(nm_dir_cachep);
-         kmem_cache_destroy(nm_uid_cachep);
-         return ret;
-     }
-
-     nm_info("Loaded successfully\n");
-     return 0;
- }
-
- fs_initcall(nomount_init);
++static int nomount_genl_clear_rules(struct sk_buff *skb, struct genl_info *info)
++{
++    mutex_lock(&nomount_write_mutex);
++    __nomount_clear_all();
++    mutex_unlock(&nomount_write_mutex);
++    nm_info("Cleared all active rules and UIDs\n");
++    return 0;
++}
++
++static int nomount_genl_dump_rules(struct sk_buff *skb, struct netlink_callback *cb)
++{
++    struct nomount_rule *rule;
++    int idx = 0; void *hdr;
++    int start_idx = cb->args[0];
++
++    rcu_read_lock();
++    list_for_each_entry_rcu(rule, &nomount_rules_list, list) {
++        if (idx < start_idx) { idx++; continue; }
++
++        hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
++                          &nomount_genl_family, NLM_F_MULTI, NOMOUNT_CMD_GET_LIST);
++        if (!hdr)
++            break;
++
++        if (nla_put_string(skb, NOMOUNT_ATTR_VIRTUAL_PATH, rule->virtual_path) ||
++             nla_put_string(skb, NOMOUNT_ATTR_REAL_PATH, rule->real_path) ||
++             nla_put_u32(skb, NOMOUNT_ATTR_FLAGS, rule->flags)) {
++
++            genlmsg_cancel(skb, hdr);
++            break;
++        }
++
++        genlmsg_end(skb, hdr);
++        idx++;
++    }
++    rcu_read_unlock();
++
++    cb->args[0] = idx; 
++    
++    return skb->len;
++}
++
++static int nomount_genl_add_uid(struct sk_buff *skb, struct genl_info *info)
++{
++    unsigned int uid;
++    struct nomount_uid_node *entry;
++
++    if (!info->attrs[NOMOUNT_ATTR_UID])
++        return -EINVAL;
++
++    uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
++
++    if (nomount_is_uid_blocked(uid)) 
++        return -EEXIST;
++
++    entry = kmem_cache_alloc(nm_uid_cachep, GFP_KERNEL);
++    if (!entry) return -ENOMEM;
++    entry->uid = uid;
++    
++    mutex_lock(&nomount_write_mutex);
++    hash_add_rcu(nomount_uid_ht, &entry->node, uid);
++    atomic_inc(&nm_active_uids);
++    if (atomic_read(&nm_active_uids) == 1) static_branch_enable(&nomount_active_uids);
++    mutex_unlock(&nomount_write_mutex);
++    
++    nm_info("Successfully added blocked UID: %u\n", uid);
++    return 0;
++}
++
++static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
++{
++    unsigned int uid;
++    struct nomount_uid_node *entry;
++    struct hlist_node *tmp;
++    int bkt;
++    bool found = false;
++
++    if (!info->attrs[NOMOUNT_ATTR_UID])
++        return -EINVAL;
++
++    uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
++
++    mutex_lock(&nomount_write_mutex);
++    hash_for_each_safe(nomount_uid_ht, bkt, tmp, entry, node) {
++        if (entry->uid == uid) {
++            hash_del_rcu(&entry->node);
++            found = true;
++            break; 
++        }
++    }
++    atomic_dec(&nm_active_uids);
++    if (atomic_read(&nm_active_uids) == 0) static_branch_disable(&nomount_active_uids);
++    mutex_unlock(&nomount_write_mutex);
++
++    if (found && entry) {
++        synchronize_rcu();
++        kmem_cache_free(nm_uid_cachep, entry);
++    }
++
++    nm_info("Successfully remove blocked UID: %u\n", uid);
++    return found ? 0 : -ENOENT;
++}
++
++static int nomount_genl_get_version(struct sk_buff *skb, struct genl_info *info)
++{
++    struct sk_buff *msg;
++    void *hdr;
++    int ret;
++
++    msg = genlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
++    if (!msg) return -ENOMEM;
++
++    hdr = genlmsg_put_reply(msg, info, &nomount_genl_family, 0, info->genlhdr->cmd);
++    if (!hdr) {
++        nlmsg_free(msg);
++        return -EMSGSIZE;
++    }
++
++    ret = nla_put_u32(msg, NOMOUNT_ATTR_VERSION, NOMOUNT_VERSION);
++    if (ret) {
++        genlmsg_cancel(msg, hdr);
++        nlmsg_free(msg);
++        return ret;
++    }
++
++    genlmsg_end(msg, hdr);
++    return genlmsg_reply(msg, info);
++}
++
++static const struct nla_policy nomount_genl_policy[NOMOUNT_ATTR_MAX + 1] = {
++    [NOMOUNT_ATTR_VIRTUAL_PATH] = { .type = NLA_NUL_STRING, .len = PATH_MAX },
++    [NOMOUNT_ATTR_REAL_PATH]    = { .type = NLA_NUL_STRING, .len = PATH_MAX },
++    [NOMOUNT_ATTR_FLAGS]        = { .type = NLA_U32 },
++    [NOMOUNT_ATTR_UID]          = { .type = NLA_U32 },
++    [NOMOUNT_ATTR_VERSION]      = { .type = NLA_U32 },
++    [NOMOUNT_ATTR_PAYLOAD]      = { .type = NLA_BINARY },
++};
++
++static const struct genl_ops nomount_genl_ops[] = {
++    { .cmd = NOMOUNT_CMD_ADD_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_rule, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_DEL_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_rule, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_CLEAR_ALL, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_clear_rules, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_ADD_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_DEL_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_GET_LIST, .flags = GENL_ADMIN_PERM, .doit = NULL, .dumpit = nomount_genl_dump_rules, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_GET_VERSION, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_get_version, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++};
++
++static struct genl_family nomount_genl_family = {
++    .name = NOMOUNT_GENL_NAME,
++    .version = NOMOUNT_GENL_VERSION,
++    .maxattr = NOMOUNT_ATTR_MAX,
++    NM_FAMILY_POLICY(nomount_genl_policy)
++    .netnsok = true,
++    .module = THIS_MODULE,
++    .ops = nomount_genl_ops,
++    .n_ops = ARRAY_SIZE(nomount_genl_ops),
++};
++
++static int __init nomount_init(void) {
++    int ret;
++
++    hash_init(nomount_rules_ht);
++    hash_init(nomount_basenames_ht);
++    hash_init(nomount_uid_ht);
++    hash_init(nomount_inodes_ht);
++
++    nm_rule_cachep = kmem_cache_create("nm_rules", sizeof(struct nomount_rule), 0, SLAB_HWCACHE_ALIGN, NULL);
++    nm_dir_cachep = kmem_cache_create("nm_dirs", sizeof(struct nomount_dir_node), 0, SLAB_HWCACHE_ALIGN, NULL);
++    nm_uid_cachep = kmem_cache_create("nm_uids", sizeof(struct nomount_uid_node), 0, SLAB_HWCACHE_ALIGN, NULL);
++
++    if (!nm_rule_cachep || !nm_dir_cachep || !nm_uid_cachep) {
++        nm_err("Failed to allocate memory slab caches\n");
++        if (nm_rule_cachep) kmem_cache_destroy(nm_rule_cachep);
++        if (nm_dir_cachep) kmem_cache_destroy(nm_dir_cachep);
++        if (nm_uid_cachep) kmem_cache_destroy(nm_uid_cachep);
++        return -ENOMEM;
++    }
++
++    ret = genl_register_family(&nomount_genl_family);
++    if (ret) {
++        nm_err("Failed to register Generic Netlink family (err: %d)\n", ret);
++        kmem_cache_destroy(nm_rule_cachep);
++        kmem_cache_destroy(nm_dir_cachep);
++        kmem_cache_destroy(nm_uid_cachep);
++        return ret;
++    }
++
++    nm_info("Loaded successfully\n");
++    return 0;
++}
++
++fs_initcall(nomount_init);
 diff --git a/fs/nomount.h b/fs/nomount.h
 new file mode 100644
 index 000000000000..9fa3e8a9359e
