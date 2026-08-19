@@ -33,7 +33,7 @@ diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
 index a8e2fa51a37c..fc7dbe7cf823 100644
 --- a/fs/proc/cmdline.c
 +++ b/fs/proc/cmdline.c
-@@ -2,11 +2,38 @@
+@@ -2,11 +2,39 @@
  #include <linux/fs.h>
  #include <linux/init.h>
  #include <linux/proc_fs.h>
