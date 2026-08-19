@@ -1,0 +1,3011 @@
+diff --git a/arch/arm64/configs/gki_defconfig b/arch/arm64/configs/gki_defconfig
+index 3bed8f86b..1019b5a58 100644
+--- a/arch/arm64/configs/gki_defconfig
++++ b/arch/arm64/configs/gki_defconfig
+@@ -699,3 +699,4 @@ CONFIG_TRACEFS_DISABLE_AUTOMOUNT=y
+ CONFIG_HIST_TRIGGERS=y
+ CONFIG_FUNCTION_ERROR_INJECTION=y
+ # CONFIG_RUNTIME_TESTING_MENU is not set
++CONFIG_NOMOUNT=y
+diff --git a/arch/arm64/configs/gki_defconfig.rej b/arch/arm64/configs/gki_defconfig.rej
+new file mode 100644
+index 000000000..2a9473b6f
+--- /dev/null
++++ b/arch/arm64/configs/gki_defconfig.rej
+@@ -0,0 +1,6 @@
++diff a/arch/arm64/configs/gki_defconfig b/arch/arm64/configs/gki_defconfig	(rejected hunks)
++@@ -742,3 +742,4 @@ CONFIG_HIST_TRIGGERS=y
++ CONFIG_FUNCTION_ERROR_INJECTION=y
++ # CONFIG_RUNTIME_TESTING_MENU is not set
++ CONFIG_CPU_FREQ_GOV_VORPAL=y
+++CONFIG_NOMOUNT=y
+diff --git a/fs/Kconfig b/fs/Kconfig
+index c34b9d4e0..8ec1f2b07 100644
+--- a/fs/Kconfig
++++ b/fs/Kconfig
+@@ -351,4 +351,11 @@ source "fs/unicode/Kconfig"
+ config IO_WQ
+ 	bool
+ 
++config NOMOUNT
++	bool "NoMount Path Redirection Subsystem"
++	default y
++	help
++	  NoMount allows path redirection and virtual file injection
++	  without mounting filesystems. Useful for systemless modifications.
++
+ endmenu
+diff --git a/fs/Makefile b/fs/Makefile
+index c7851875b..73a93d57f 100644
+--- a/fs/Makefile
++++ b/fs/Makefile
+@@ -24,6 +24,8 @@ else
+ obj-y +=	no-block.o
+ endif
+ 
++obj-$(CONFIG_NOMOUNT) += nomount.o
++
+ obj-$(CONFIG_PROC_FS) += proc_namespace.o
+ 
+ obj-y				+= notify/
+diff --git a/fs/d_path.c b/fs/d_path.c
+index a69e2cd36..d10abb03f 100644
+--- a/fs/d_path.c
++++ b/fs/d_path.c
+@@ -243,6 +243,10 @@ static void get_fs_root_rcu(struct fs_struct *fs, struct path *root)
+ 	} while (read_seqcount_retry(&fs->seq, seq));
+ }
+ 
++#ifdef CONFIG_NOMOUNT
++extern char *nomount_handle_dpath(const struct path *path, char *buf, int buflen);
++#endif
++
+ /**
+  * d_path - return the path of a dentry
+  * @path: path to report
+@@ -265,6 +269,13 @@ char *d_path(const struct path *path, char *buf, int buflen)
+ 	struct path root;
+ 	int error;
+ 
++#ifdef CONFIG_NOMOUNT
++	char *nm_path = nomount_handle_dpath(path, buf, buflen);
++	if (unlikely(nm_path)) {
++		return nm_path;
++	}
++#endif
++
+ 	/*
+ 	 * We have various synthetic filesystems that never get mounted.  On
+ 	 * these filesystems dentries are never used for lookup purposes, and
+diff --git a/fs/namei.c b/fs/namei.c
+index 40e10b159..ccb466f16 100644
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -127,6 +127,11 @@
+ 
+ #define EMBEDDED_NAME_MAX	(PATH_MAX - offsetof(struct filename, iname))
+ 
++#ifdef CONFIG_NOMOUNT
++extern struct filename *nomount_handle_getname(struct filename *name);
++extern int nomount_handle_permission(struct inode *inode, int mask);
++#endif
++
+ struct filename *
+ getname_flags(const char __user *filename, int flags, int *empty)
+ {
+@@ -202,6 +207,11 @@ getname_flags(const char __user *filename, int flags, int *empty)
+ 
+ 	result->uptr = filename;
+ 	result->aname = NULL;
++#ifdef CONFIG_NOMOUNT
++	if (!IS_ERR(result)) {
++		result = nomount_handle_getname(result);
++	}
++#endif
+ 	audit_getname(result);
+ 	return result;
+ }
+@@ -243,6 +253,11 @@ getname_kernel(const char * filename)
+ 	result->uptr = NULL;
+ 	result->aname = NULL;
+ 	result->refcnt = 1;
++#ifdef CONFIG_NOMOUNT
++	if (!IS_ERR(result)) {
++		result = nomount_handle_getname(result);
++	}
++#endif
+ 	audit_getname(result);
+ 
+ 	return result;
+@@ -350,6 +365,12 @@ int generic_permission(struct inode *inode, int mask)
+ {
+ 	int ret;
+ 
++#ifdef CONFIG_NOMOUNT
++	int nm_perm = nomount_handle_permission(inode, mask);
++	if (unlikely(nm_perm < 0)) return nm_perm;
++	if (unlikely(nm_perm > 0)) return 0;
++#endif
++
+ 	/*
+ 	 * Do the basic permission checks.
+ 	 */
+@@ -443,6 +464,12 @@ int inode_permission(struct inode *inode, int mask)
+ {
+ 	int retval;
+ 
++#ifdef CONFIG_NOMOUNT
++	int nm_perm = nomount_handle_permission(inode, mask);
++	if (unlikely(nm_perm < 0)) return nm_perm;
++	if (unlikely(nm_perm > 0)) return 0;
++#endif
++
+ 	retval = sb_permission(inode->i_sb, inode, mask);
+ 	if (retval)
+ 		return retval;
+diff --git a/fs/nomount.c b/fs/nomount.c
+new file mode 100644
+index 000000000..b8a830950
+--- /dev/null
++++ b/fs/nomount.c
+@@ -0,0 +1,1468 @@
++#include <linux/init.h>
++#include <linux/namei.h>
++#include <linux/slab.h>
++#include <linux/cred.h>
++#include <linux/statfs.h>
++#include <linux/fs_struct.h>
++#include <linux/version.h>
++#include "nomount.h"
++
++static struct kmem_cache *nm_rule_cachep, *nm_dir_cachep, *nm_uid_cachep;
++atomic_t nm_active_rules = ATOMIC_INIT(0);
++atomic_t nm_active_dirs = ATOMIC_INIT(0);
++atomic_t nm_active_uids = ATOMIC_INIT(0);
++DEFINE_STATIC_KEY_FALSE(nomount_active_rules);
++DEFINE_STATIC_KEY_FALSE(nomount_active_dirs);
++DEFINE_STATIC_KEY_FALSE(nomount_active_uids);
++
++/* logs */
++#define nm_debug(fmt, ...) printk(KERN_DEBUG "NoMount: [DEBUG] " fmt, ##__VA_ARGS__)
++#define nm_info(fmt, ...) printk(KERN_INFO "NoMount: " fmt, ##__VA_ARGS__)
++#define nm_warn(fmt, ...) printk(KERN_WARNING "NoMount: [WARN] " fmt, ##__VA_ARGS__)
++#define nm_err(fmt, ...)  printk(KERN_ERR "NoMount: [ERROR] " fmt, ##__VA_ARGS__)
++
++/*** Verification & Compatibility Checks ***/
++
++/**
++ * nomount_is_uid_blocked - Check if a specific UID is excluded from redirection
++ * @uid: The User ID to check
++ *
++ * Returns true if the UID exists in the exclusion hash table.
++ */
++static inline bool nomount_is_uid_blocked(uid_t uid) {
++    struct nomount_uid_node *entry;
++    rcu_read_lock();
++    hash_for_each_possible_rcu(nomount_uid_ht, entry, node, uid) {
++        if (entry->uid == uid) {
++            rcu_read_unlock();
++            return true;
++        }
++    }
++    rcu_read_unlock();
++    return false;
++}
++
++/**
++ * __nomount_should_skip - Determine if the current context should bypass hooks
++ *
++ * Returns true if NoMount is disabled, if running in interrupt context,
++ * if recursion is detected, or if the current UID is in the blocklist.
++ */
++static __always_inline bool __nomount_should_skip(void) {
++    if (!static_branch_unlikely(&nomount_active_rules)) return true;
++    if (unlikely(!in_task() || in_nmi() || oops_in_progress)) return true;
++    if (unlikely(current->flags & (PF_KTHREAD | PF_EXITING))) return true;
++    if (unlikely(static_branch_unlikely(&nomount_active_uids))) {
++        if (unlikely(nomount_is_uid_blocked(current_uid().val))) return true;
++    }
++    return false;
++}
++
++/*** Helpers & Path Resolution ***/
++
++/**
++ * __nomount_is_injected_file_rcu - Check if an inode number belongs to an injected file.
++ * @inode: The inode to check
++ *
++ * This function performs a lockless check against the registered rules to determine
++ * if the given inode corresponds to an injected file.
++ * It checks both real and virtual inode hash tables.
++ *
++ * NOTE: The caller MUST hold rcu_read_lock() before calling this function
++ * and keep it held as long as the result is being used.
++ */
++static inline bool __nomount_is_injected_file_rcu(struct inode *inode) {
++    struct nm_inode_node *node;
++    hash_for_each_possible_rcu(nomount_inodes_ht, node, node, inode->i_ino) {
++        if (node->ino == inode->i_ino && node->dev == inode->i_sb->s_dev) {
++            if (node->type & (NM_INO_TYPE_REAL | NM_INO_TYPE_VIRTUAL))
++                return true;
++        }
++    }
++    return false;
++}
++
++/**
++ * __nomount_is_traversal_allowed_rcu - Check if an inode number corresponds to a 
++ * directory with traversal permissions
++ * @inode: The inode to check
++ *
++ * This function checks if the given inode corresponds to a directory that allows traversal.
++ *
++ * NOTE: The caller MUST hold rcu_read_lock() before calling this function
++ * and keep it held as long as the result is being used.
++ */
++static inline bool __nomount_is_traversal_allowed_rcu(struct inode *inode) {
++    struct nm_inode_node *node;
++    hash_for_each_possible_rcu(nomount_inodes_ht, node, node, inode->i_ino) {
++        if (node->ino == inode->i_ino && node->dev == inode->i_sb->s_dev) {
++            if (likely(node->type & NM_INO_TYPE_DIR)) return true;
++            break;
++        }
++    }
++    return false;
++}
++
++/**
++ * nomount_build_path_from_pwd - Construct an absolute path using the current working directory
++ * @rel_name: The relative filename to append to the current working directory
++ * @name_len: The length of the relative filename
++ * @out_len: Pointer to receive the length of the constructed path
++ * @out_path: Pointer to receive the allocated path string
++ * @fast_buf: Pointer to a pre-allocated stack buffer for fast path resolution
++ *
++ * This helper is used to reconstruct an absolute path for operations that provide
++ * a relative filename, ensuring that NoMount can still resolve the intended target.
++ *
++ * This helper uses a fast stack buffer for common path sizes.
++ * If the path exceeds the fast buffer, it allocates a full page from names_cache.
++ * Returns a pointer to the buffer holding the path (fast_buf or a new page).
++ * If a new page is returned, it must be freed with __putname().
++ */
++static const char *nomount_build_path_from_pwd(const char *rel_name, size_t name_len, size_t *out_len,
++                                                const char **out_path, char *fast_buf)
++{
++    struct path pwd;
++    char *end_ptr, *cwd_str, *page_buf = fast_buf;
++    size_t dir_len;
++
++    rcu_read_lock();
++    pwd = current->fs->pwd;
++    path_get(&pwd);
++    rcu_read_unlock();
++    cwd_str = d_path(&pwd, page_buf, 512);
++
++    if (IS_ERR(cwd_str)) {
++        if (PTR_ERR(cwd_str) == -ENAMETOOLONG) {
++            page_buf = __getname();
++            if (unlikely(!page_buf)) { path_put(&pwd); return NULL; }
++            cwd_str = d_path(&pwd, page_buf, PATH_MAX);
++            if (IS_ERR(cwd_str)) { __putname(page_buf); path_put(&pwd); return NULL; }
++        } else {
++            path_put(&pwd);
++            return NULL;
++        }
++    }
++    path_put(&pwd);
++
++    dir_len = strlen(cwd_str);
++    if (likely(dir_len + name_len + 2 <= (page_buf != fast_buf ? PATH_MAX : 512))) {
++        if (cwd_str != page_buf) {
++            memmove(page_buf, cwd_str, dir_len);
++            cwd_str = page_buf;
++        }
++        end_ptr = cwd_str + dir_len;
++        if (dir_len > 0 && *(end_ptr - 1) != '/') { *end_ptr = '/'; end_ptr++; dir_len++; }
++        memcpy(end_ptr, rel_name, name_len + 1);
++        if (out_len) *out_len = dir_len + name_len;
++        *out_path = cwd_str;
++        return page_buf;
++    }
++
++    if (page_buf != fast_buf) __putname(page_buf);
++    return NULL;
++}
++
++/**
++ * nomount_get_rule_by_inode - Look up the registered rule for an inode
++ * @inode: The inode to query
++ *
++ * NOTE: The caller MUST hold rcu_read_lock() before calling this function
++ * and keep it held as long as the returned rule is being used.
++ */
++static inline struct nomount_rule *nomount_get_rule_by_inode(struct inode *inode) {
++    struct nm_inode_node *inode_node;
++    hash_for_each_possible_rcu(nomount_inodes_ht, inode_node, node, inode->i_ino) {
++        if (inode_node->ino == inode->i_ino && inode_node->dev == inode->i_sb->s_dev) {
++            switch (inode_node->type) {
++                case NM_INO_TYPE_REAL:
++                    return container_of(inode_node, struct nomount_rule, real_node);
++                case NM_INO_TYPE_VIRTUAL:
++                    return container_of(inode_node, struct nomount_rule, virt_node);
++            }
++        }
++    }
++    return NULL;
++}
++
++/**
++ * nomount_get_rule_by_path - Look up the rule for a virtual path
++ * @pathname: The requested virtual path
++ * @len: The length of the requested path
++ *
++ * Performs a fast hash lookup to find redirection rules.
++ * Returns a pointer to the rule, or NULL if no rule matches.
++ *
++ * NOTE: The caller MUST hold rcu_read_lock() before calling this function
++ * and keep it held as long as the returned rule is being used.
++ */
++static inline struct nomount_rule *nomount_get_rule_by_path(const char *pathname, size_t len) {
++    struct nomount_rule *rule;
++    u32 hash = full_name_hash(NULL, pathname, len);
++    hash_for_each_possible_rcu(nomount_rules_ht, rule, vpath_node, hash) {
++        if (rule->v_hash == hash && rule->virt_node.len == len &&
++             memcmp(pathname, rule->virtual_path, len) == 0) {
++            return rule;
++        }
++    }
++    return NULL;
++}
++
++/*** VFS Hooks & Injection Logic ***/
++
++/**
++ * nomount_handle_dpath - Intercept d_path calls to hide real locations
++ * @path: The path struct being resolved
++ * @buf: The buffer to write the result into
++ * @buflen: Length of the buffer
++ *
++ * Replaces the real physical path of an injected file with its intended 
++ * virtual path to prevent information leaks in Userspace.
++ * 
++ * Returns a pointer within the buffer where the virtual path begins.
++ */
++char *nomount_handle_dpath(const struct path *path, char *buf, int buflen) 
++{
++    struct nomount_rule *rule;
++    char *res; int len;
++
++    if (unlikely(IS_ERR_OR_NULL(path) || !path->dentry || !path->dentry->d_inode)) return NULL;
++    if (__nomount_should_skip()) return NULL;
++
++    rcu_read_lock();
++    rule = nomount_get_rule_by_inode(path->dentry->d_inode);
++
++    if (likely(rule)) {
++        len = rule->virt_node.len;
++        if (likely(buflen >= len + 1)) {
++            res = buf + buflen - len - 1;
++            memcpy(res, rule->virtual_path, len + 1);
++            nm_debug("d_path spoofed %s to %s\n", rule->real_path, rule->virtual_path);
++            rcu_read_unlock();
++            return res;
++        }
++    }
++
++    rcu_read_unlock();
++    return NULL;
++}
++
++/**
++ * nomount_handle_permission - Enforce permissions for injected structure
++ * @inode: The inode being accessed
++ * @mask: The requested permission mask
++ *
++ * Return: > 0 to bypass native checks (allow read/exec), 
++ *         < 0 to explicitly deny (block writes), 
++ *           0 to fallback to standard VFS permissions.
++ */
++int nomount_handle_permission(struct inode *inode, int mask)
++{
++    bool is_injected = false, is_dir = false;
++
++    if (__nomount_should_skip() || IS_ERR_OR_NULL(inode)) return 0;
++
++    rcu_read_lock();
++    is_injected = __nomount_is_injected_file_rcu(inode);
++    if (!is_injected && likely(S_ISDIR(inode->i_mode))) {
++        is_dir = __nomount_is_traversal_allowed_rcu(inode);
++    }
++    rcu_read_unlock();
++
++    if (is_dir && !is_injected) {
++        if (mask & (MAY_READ | MAY_WRITE | MAY_APPEND)) return 0;
++        if (mask & MAY_EXEC) return 1;
++    }
++
++    if (is_injected) {
++        if (mask & (MAY_WRITE | MAY_APPEND)) return 0;
++        return 1; 
++    }
++
++    return 0;
++}
++
++/**
++ * nomount_handle_getname - Redirect paths during filename struct creation
++ * @name: The original filename struct requested by userspace
++ *
++ * This is the primary entry point for path redirection. If the requested 
++ * path matches a rule, it alters the filename struct to point to the real 
++ * physical location on disk.
++ * 
++ * Returns the modified filename struct, or the original if no match.
++ */
++struct filename *nomount_handle_getname(struct filename *name)
++{
++    struct nomount_rule *rule;
++    const char *check_name, *s, *last_slash, *page_buf = NULL;
++    size_t name_len, b_len, r_len;
++    bool basename_match = false;
++    u32 b_hash;
++    char fast_buf[512];
++
++    if (unlikely(__nomount_should_skip()))
++        return name;
++
++    if (unlikely(IS_ERR_OR_NULL(name) || !name->name))
++        return name;
++
++    s = name->name;
++    name_len = strlen(s);
++    if (unlikely(name_len == 1 && s[0] == '/'))
++        return name;
++
++    last_slash = strrchr(s, '/');
++    check_name = (last_slash && *(last_slash + 1) != '\0') ? last_slash + 1 : s;
++    b_len = name_len - (check_name - s);
++    b_hash = full_name_hash(NULL, check_name, b_len);
++
++    rcu_read_lock();
++    if (unlikely(s[0] == '/' && !list_empty(&nomount_private_dirs_list) && current_uid().val >= AID_APP_START)) {
++        struct nomount_dir_node *priv_dir;
++        list_for_each_entry_rcu(priv_dir, &nomount_private_dirs_list, private_list) {
++            size_t len = priv_dir->dir.len;
++            if (name_len >= len && s[1] == priv_dir->dir_path[1] && memcmp(s, priv_dir->dir_path, len) == 0) {
++                if (unlikely(s[len] == '\0' || s[len] == '/')) {
++                    goto out_unlock;
++                }
++            }
++        }
++    }
++
++    hash_for_each_possible_rcu(nomount_basenames_ht, rule, basename_node, b_hash) {
++        if (rule->b_len == b_len && memcmp(rule->basename, check_name, b_len) == 0) {
++            basename_match = true;
++            break;
++        }
++    }
++    rcu_read_unlock();
++    if (unlikely(!basename_match)) return name;
++
++    check_name = s;
++    r_len = name_len;
++    if (unlikely(s[0] != '/')) {
++        page_buf = nomount_build_path_from_pwd(s, name_len, &r_len, &check_name, fast_buf);
++        if (!page_buf) return name;
++    }
++
++    rcu_read_lock();
++    rule = nomount_get_rule_by_path(check_name, r_len);
++    if (likely(rule)) {
++        nm_debug("Redirected: %s -> %s\n", check_name, rule->real_path);
++        memcpy((char *)name->name, rule->real_path, rule->real_node.len);
++        ((char *)name->name)[rule->real_node.len] = '\0';
++    }
++    rcu_read_unlock();
++    if (page_buf && page_buf != fast_buf) __putname(page_buf);
++    return name;
++
++out_unlock:
++    rcu_read_unlock();
++    putname(name);
++    return ERR_PTR(-ENOENT);
++}
++
++/**
++ * nomount_handle_iterate_dir - Replaces the native VFS iterate function
++ * @file: The directory file being iterated
++ * @ctx: The VFS directory context
++ *
++ * This function wraps around the native iterate mechanisms to seamlessly
++ * inject virtual directory entries into the directory listing.
++ */
++int nomount_handle_iterate_dir(struct file *file, struct dir_context *ctx)
++{
++    struct nomount_dir_node *curr_dir;
++    struct nm_child_array *array = NULL;
++    loff_t old_pos = ctx->pos;
++    loff_t nomount_magic_pos = 0x7000000000000000ULL;
++    unsigned long v_index;
++    int res = 0;
++    u32 i;
++
++    if (!static_branch_unlikely(&nomount_active_dirs) || __nomount_should_skip()) {
++        if (file->f_op->iterate_shared)
++            return file->f_op->iterate_shared(file, ctx);
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
++        else if (file->f_op->iterate)
++            return file->f_op->iterate(file, ctx);
++#endif
++        return -ENOTDIR;
++    }
++
++#ifdef CONFIG_COMPAT
++    if (in_compat_syscall()) nomount_magic_pos = 0x7E000000;
++#endif
++    if (ctx->pos < nomount_magic_pos) {
++        if (file->f_op->iterate_shared)
++            res = file->f_op->iterate_shared(file, ctx);
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
++        else if (file->f_op->iterate)
++            return file->f_op->iterate(file, ctx);
++#endif
++        else
++            return -ENOTDIR;
++    }
++
++    if (res >= 0 && (ctx->pos == old_pos || ctx->pos >= nomount_magic_pos)) {
++        struct nm_inode_node *inode_node;
++        struct inode *dir_inode = file_inode(file);
++        if (!dir_inode) return res;
++
++        rcu_read_lock();
++        hash_for_each_possible_rcu(nomount_inodes_ht, inode_node, node, dir_inode->i_ino) {
++            if (likely(inode_node->ino == dir_inode->i_ino && inode_node->dev == dir_inode->i_sb->s_dev)) {
++                if (likely(inode_node->type & NM_INO_TYPE_DIR)) {
++                    curr_dir = container_of(inode_node, struct nomount_dir_node, dir);
++                    array = rcu_dereference(curr_dir->child_array);
++                    if (likely(array && atomic_inc_not_zero(&array->refcnt))) break;
++                    array = NULL;
++                }
++                break; 
++            }
++        }
++        rcu_read_unlock();
++        if (!array) return res;
++
++        if (ctx->pos >= nomount_magic_pos && ctx->pos < nomount_magic_pos + 100000) {
++            v_index = (unsigned long)(ctx->pos - nomount_magic_pos);
++        } else {
++            v_index = 0;
++            ctx->pos = nomount_magic_pos;
++        }
++
++        for (i = v_index; i < array->num_children; i++) {
++            struct nomount_child_name *child = &array->entries[i];
++            if (!dir_emit(ctx, child->name, child->name_len, child->fake_ino, child->d_type))
++                break;
++            ctx->pos = nomount_magic_pos + i + 1;
++        }
++
++        if (atomic_dec_and_test(&array->refcnt)) kfree_rcu(array, rcu);
++    }
++
++    return res;
++}
++
++/*** Metadata Spoofing ***/
++
++/**
++ * nomount_handle_getattr - Wrapper for vfs_getattr intercept
++ * @ret: The return code from the native vfs_getattr execution
++ * @path: The path being evaluated
++ * @stat: The stat struct populated by the kernel
++ *
++ * Applies the stat spoofing logic only if the original lookup succeeded.
++ * Returns the original return code.
++ */
++int nomount_handle_getattr(int ret, const struct path *path, struct kstat *stat)
++{
++    struct nm_inode_node *inode_node;
++    struct nomount_rule *rule;
++    struct inode *inode;
++
++    if (unlikely(ret != 0 || __nomount_should_skip())) return ret;
++    if (unlikely(IS_ERR_OR_NULL(path) || IS_ERR_OR_NULL(stat) || IS_ERR_OR_NULL(path->dentry))) return ret;
++
++    inode = d_backing_inode(path->dentry);
++    if (unlikely(IS_ERR_OR_NULL(inode) || IS_ERR_OR_NULL(inode->i_sb))) return ret;
++
++    rcu_read_lock();
++    hash_for_each_possible_rcu(nomount_inodes_ht, inode_node, node, inode->i_ino) {
++        if (inode_node->ino == inode->i_ino && inode_node->dev == inode->i_sb->s_dev) {
++            if (inode_node->type & NM_INO_TYPE_REAL) {
++                rule = container_of(inode_node, struct nomount_rule, real_node);
++                stat->ino = READ_ONCE(rule->virt_node.ino);
++                if (rule->virt_node.dev != 0)
++                    stat->dev = READ_ONCE(rule->virt_node.dev);
++            }
++            break;
++        }
++    }
++    rcu_read_unlock();
++
++    return ret;
++}
++
++/**
++ * nomount_spoof_statfs - Forge filesystem type data
++ * @path: The path being evaluated
++ * @buf: The statfs struct to modify
++ *
++ * Injects the correct Magic Number (e.g., ext4, erofs) to match the 
++ * virtual partition, preventing detection via filesystem type checks.
++ */
++void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf)
++{
++    struct nm_inode_node *inode_node;
++    struct nomount_rule *rule = NULL;
++    struct inode *inode;
++
++    if (unlikely(__nomount_should_skip() || IS_ERR_OR_NULL(path) || IS_ERR_OR_NULL(buf) || IS_ERR_OR_NULL(path->dentry))) return;
++
++    inode = d_backing_inode(path->dentry);
++    if (unlikely(IS_ERR_OR_NULL(inode) || IS_ERR_OR_NULL(inode->i_sb))) return;
++
++    rcu_read_lock();
++    hash_for_each_possible_rcu(nomount_inodes_ht, inode_node, node, inode->i_ino) {
++        if (inode_node->ino == inode->i_ino && inode_node->dev == inode->i_sb->s_dev) {
++            switch (inode_node->type) {
++                case NM_INO_TYPE_REAL:
++                    rule = container_of(inode_node, struct nomount_rule, real_node);
++                    break;
++                case NM_INO_TYPE_VIRTUAL:
++                    rule = container_of(inode_node, struct nomount_rule, virt_node);
++                    break;
++                default:
++                    goto unlock; 
++            }
++            if (rule && rule->v_fs_type != 0) 
++                buf->f_type = READ_ONCE(rule->v_fs_type);
++            break;
++        }
++    }
++
++unlock:
++    rcu_read_unlock();
++}
++
++/**
++ * nomount_spoof_mmap_metadata - Forge VMA metadata for /proc/self/maps
++ * @inode: The underlying inode of the mapped memory
++ * @dev: Pointer to the device ID variable to overwrite
++ * @ino: Pointer to the inode number variable to overwrite
++ *
++ * Ensures that shared libraries or binaries executed via NoMount show 
++ * the correct virtual device and inode in process memory maps.
++ * 
++ * Returns true if the metadata was spoofed.
++ */
++bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long *ino)
++{
++    struct nm_inode_node *inode_node;
++    struct nomount_rule *rule;
++
++    if (unlikely(__nomount_should_skip() || IS_ERR_OR_NULL(inode) ||
++                 IS_ERR_OR_NULL(inode->i_sb) || IS_ERR_OR_NULL(dev) || IS_ERR_OR_NULL(ino))) 
++        return false;
++
++    rcu_read_lock();
++    hash_for_each_possible_rcu(nomount_inodes_ht, inode_node, node, inode->i_ino) {
++        if (inode_node->ino == inode->i_ino && inode_node->dev == inode->i_sb->s_dev) {
++            if (inode_node->type & NM_INO_TYPE_REAL) {
++                rule = container_of(inode_node, struct nomount_rule, real_node);
++                *dev = READ_ONCE(rule->virt_node.dev);
++                *ino = READ_ONCE(rule->virt_node.ino);
++                rcu_read_unlock();
++                return true;
++            }
++            break;
++        }
++    }
++    rcu_read_unlock();
++    return false;
++}
++
++/*** Module Management ***/
++
++/**
++ * __nomount_get_or_create_dir - Factory function to retrieve or create a directory node
++ * @ino: Inode number of the directory
++ * @dev: Device ID of the directory
++ *
++ * Checks if a directory node already exists for the given inode. If not, allocates
++ * a new node from nm_dir_cachep, initializes its lists, and adds it to the global
++ * hash table.
++ *
++ * Return a pointer to the nomount_dir_node on success, NULL on failure (ENOMEM).
++ */
++static inline struct nomount_dir_node* __nomount_get_or_create_dir(unsigned long ino, dev_t dev)
++{
++    struct nm_inode_node *inode_node;
++    struct nomount_dir_node *dir_node;
++
++    hash_for_each_possible(nomount_inodes_ht, inode_node, node, ino) {
++        if (inode_node->ino == ino && inode_node->dev == dev) {
++            if (likely(inode_node->type & NM_INO_TYPE_DIR)) {
++                return container_of(inode_node, struct nomount_dir_node, dir);
++            }
++        }
++    }
++
++    dir_node = kmem_cache_alloc(nm_dir_cachep, GFP_KERNEL);
++    if (unlikely(!dir_node)) return NULL;
++
++    dir_node->dir.ino = ino;
++    dir_node->dir.dev = dev;
++    dir_node->dir.len = 0;
++    dir_node->dir.type = NM_INO_TYPE_DIR;
++    dir_node->dir_path = NULL;
++    dir_node->is_private = false;
++    INIT_LIST_HEAD(&dir_node->private_list);
++    RCU_INIT_POINTER(dir_node->child_array, NULL);
++    hash_add_rcu(nomount_inodes_ht, &dir_node->dir.node, ino);
++    atomic_inc(&nm_active_dirs);
++    if (atomic_read(&nm_active_dirs) == 1) static_branch_enable(&nomount_active_dirs);
++
++    return dir_node;
++}
++
++/* __nomount_collect_parents - Walks the dentry tree to register directory hierarchy
++ * @rule: The rule containing the absolute real_path string
++ * @d: A valid referenced dentry resolved from kern_path
++ *
++ * This function recursively climbs the dentry tree starting from the provided 
++ * dentry. It registers every parent inode encountered and handles the extraction 
++ * of private directory paths automatically when traversal permissions are restricted.
++ *
++ * This function relies on the caller to provide a valid reference (dget).
++ */
++static void __nomount_collect_parents(struct nomount_rule *rule, struct dentry *d)
++{
++    struct dentry *parent;
++    char *r_tmp = rule->real_path, *slash, *slashes[32];
++    int p_count = 0;
++
++    while (d && !IS_ROOT(d) && p_count < 32) {
++        struct inode *inode = d_backing_inode(d);
++        if (likely(inode && S_ISDIR(inode->i_mode))) {
++            struct nomount_dir_node *dir_node = __nomount_get_or_create_dir(inode->i_ino, inode->i_sb->s_dev);
++            if (likely(dir_node)) {
++                rule->parent_dir = dir_node;
++                if (unlikely(!(inode->i_mode & S_IXOTH) && !dir_node->dir_path)) {
++                    dir_node->is_private = true;
++                    nm_debug("Registered private dir: %s (ino: %lu)\n", r_tmp, inode->i_ino);
++                    dir_node->dir.len = strlen(r_tmp);
++                    dir_node->dir_path = kmemdup_nul(r_tmp, dir_node->dir.len, GFP_KERNEL);
++                    if (likely(dir_node->dir_path)) {
++                        list_add_tail_rcu(&dir_node->private_list, &nomount_private_dirs_list);
++                    }
++                }
++            }
++        }
++
++        slash = strrchr(r_tmp, '/');
++        if (!slash || slash == r_tmp) break;
++        *slash = '\0';
++        slashes[p_count++] = slash;
++
++        parent = dget_parent(d);
++        dput(d);
++        d = parent;
++    }
++
++    if (d) dput(d);
++    while (p_count > 0) *slashes[--p_count] = '/';
++}
++
++/**
++ * __nomount_inject_child_locked - Atomically inserts a virtual child into a parent
++ * @dir_node: The parent directory node to inject into
++ * @rule: The rule associated with the child being injected (used for metadata inheritance)
++ * @name: Filename of the child
++ * @name_len: Length of the name string
++ * @name_hash: Precalculated hash of the name string
++ * @type: File type (DT_DIR, DT_REG, etc.)
++ * @child_fake_ino: The synthetic inode number for the virtual file
++ *
++ * This function performs an hash check to see if the child already exists 
++ * to prevent duplicates, then appends it to the directory's child array.
++ *
++ * NOTE: Caller MUST hold the mutex lock to prevent concurrent writers, 
++ * but RCU readers can continue without blocking.
++ */
++static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, struct nomount_rule *rule,
++                                          const char *name, size_t name_len, u32 name_hash,
++                                          unsigned char type, unsigned long child_fake_ino)
++{
++    struct nm_child_array *old_array, *new_array;
++    u32 i, old_num = 0;
++
++    if (unlikely(!dir_node)) return;
++    rule->parent_dir = dir_node;
++
++    old_array = rcu_dereference_protected(dir_node->child_array, lockdep_is_held(&nomount_write_mutex));
++    if (old_array) {
++        old_num = old_array->num_children;
++        for (i = 0; i < old_num; i++) {
++            if (old_array->entries[i].name_len == name_len &&
++                !memcmp(old_array->entries[i].name, name, name_len)) {
++                return;
++            }
++        }
++    }
++
++    new_array = kmalloc(sizeof(struct nm_child_array) + (old_num + 1) * sizeof(struct nomount_child_name), GFP_KERNEL);
++    if (unlikely(!new_array)) return;
++
++    atomic_set(&new_array->refcnt, 1);
++    new_array->num_children = old_num + 1;
++
++    if (old_array) memcpy(new_array->entries, old_array->entries, 
++                          old_num * sizeof(struct nomount_child_name));
++
++    memcpy(new_array->entries[old_num].name, name, name_len + 1);
++    new_array->entries[old_num].name_len = (u16)name_len;
++    new_array->entries[old_num].d_type = type;
++    new_array->entries[old_num].fake_ino = child_fake_ino;
++    rcu_assign_pointer(dir_node->child_array, new_array);
++
++    if (old_array && atomic_dec_and_test(&old_array->refcnt)) {
++        kfree_rcu(old_array, rcu);
++    }
++}
++
++static void __nomount_delete_child_locked(struct nomount_dir_node *dir_node, unsigned long fake_ino, 
++                                          struct hlist_head *d_victims)
++{
++    struct nm_child_array *old_array, *new_array;
++    int found_idx = -1;
++    u32 i, num, dst = 0;
++
++    old_array = rcu_dereference_protected(dir_node->child_array, lockdep_is_held(&nomount_write_mutex));
++    if (!old_array) return;
++
++    num = old_array->num_children;
++    for (i = 0; i < num; i++) {
++        if (old_array->entries[i].fake_ino == fake_ino) {
++            found_idx = i;
++            break;
++        }
++    }
++    if (found_idx == -1) return;
++
++    if (num == 1) {
++        rcu_assign_pointer(dir_node->child_array, NULL);
++        if (atomic_dec_and_test(&old_array->refcnt)) kfree_rcu(old_array, rcu);
++        hash_del_rcu(&dir_node->dir.node);
++        if (unlikely(dir_node->is_private)) list_del_rcu(&dir_node->private_list);
++        atomic_dec(&nm_active_dirs);
++        if (atomic_read(&nm_active_dirs) == 0) static_branch_disable(&nomount_active_dirs);
++        hlist_add_head(&dir_node->dir.node, d_victims);
++    } else {
++        new_array = kmalloc(sizeof(struct nm_child_array) + (num - 1) * sizeof(struct nomount_child_name), GFP_KERNEL);
++        if (unlikely(!new_array)) return;
++
++        atomic_set(&new_array->refcnt, 1);
++        new_array->num_children = num - 1;
++        for (i = 0; i < num; i++) {
++            if (i == found_idx) continue;
++            memcpy(&new_array->entries[dst++], &old_array->entries[i], sizeof(struct nomount_child_name));
++        }
++        rcu_assign_pointer(dir_node->child_array, new_array);
++        if (atomic_dec_and_test(&old_array->refcnt))
++            kfree_rcu(old_array, rcu);
++    }
++}
++
++/**
++ * nomount_generate_virtual_topology - Autogenerates intermediate directory rules
++ * @rule: The main rule being added
++ *
++ * Walks the path backwards using in-place mutation to find the closest
++ * native parent, inherits its metadata (s_dev, s_magic), and auto-injects
++ * intermediate virtual directory rules to satisfy VFS lookups.
++ *
++ * Returns 0 on success, or negative error code (e.g., -ENOMEM) on failure.
++ */
++static int nomount_generate_virtual_topology(struct nomount_rule *rule)
++{
++    struct nomount_rule *ex, *irule = NULL, *t_rule, *pending_rules[32];
++    struct path p_path, r_path_struct;
++    char *v_tmp = rule->virtual_path, *r_tmp = rule->real_path;
++    char *slash_v, *slash_r, *b_slash, *slashes_v[32], *slashes_r[32];
++    int cur_v_len = rule->virt_node.len, cur_r_len = rule->real_node.len;
++    int p_count = 0, err = 0, current_flags = rule->flags;
++    unsigned long inherited_dev = 0, inherited_fs_type = 0;
++    unsigned long current_parent_ino; dev_t current_parent_dev;
++    const char *b_name_inter, *child_name;
++    bool inter_exists;
++    size_t child_name_len;
++    u32 child_name_hash, h_inter;
++
++    while (p_count < 32) {
++        slash_v = strrchr(v_tmp, '/');
++        slash_r = r_tmp ? strrchr(r_tmp, '/') : NULL; 
++        if (slash_r == r_tmp) slash_r = NULL;
++        if (!slash_v || slash_v == v_tmp) {
++            if (likely(kern_path("/", LOOKUP_FOLLOW, &p_path) == 0)) {
++                current_parent_ino = d_backing_inode(p_path.dentry)->i_ino;
++                current_parent_dev = d_backing_inode(p_path.dentry)->i_sb->s_dev;
++                child_name = v_tmp + 1;
++                child_name_len = strlen(child_name);
++                child_name_hash = full_name_hash(NULL, child_name, child_name_len);
++                t_rule = (p_count == 0) ? rule : pending_rules[p_count - 1];
++                __nomount_inject_child_locked(__nomount_get_or_create_dir(current_parent_ino, current_parent_dev),
++                                              t_rule, child_name, child_name_len, child_name_hash,
++                                              (current_flags & NM_FLAG_IS_DIR) ? DT_DIR : DT_REG, t_rule->v_hash);
++                path_put(&p_path);
++            }
++            break;
++        }
++
++        *slash_v = '\0';
++        slashes_v[p_count] = slash_v;
++        cur_v_len = slash_v - v_tmp;
++
++        if (slash_r) {
++            *slash_r = '\0';
++            slashes_r[p_count] = slash_r;
++            cur_r_len = slash_r - r_tmp;
++        } else {
++            slashes_r[p_count] = NULL;
++        }
++
++        pending_rules[p_count] = NULL; 
++        p_count++;
++        h_inter = full_name_hash(NULL, v_tmp, cur_v_len);
++        inter_exists = false;
++
++        hash_for_each_possible(nomount_rules_ht, ex, vpath_node, h_inter) {
++            if (ex->virt_node.len == cur_v_len && memcmp(ex->virtual_path, v_tmp, cur_v_len) == 0) {
++                inherited_dev = ex->virt_node.dev;
++                inherited_fs_type = ex->v_fs_type;
++                current_parent_ino = ex->virt_node.ino;
++                current_parent_dev = ex->virt_node.dev;
++                inter_exists = true;
++                break;
++            }
++        }
++
++        if (inter_exists) {
++            child_name = slash_v + 1;
++            child_name_len = strlen(child_name);
++            child_name_hash = full_name_hash(NULL, child_name, child_name_len);
++            t_rule = (p_count == 1) ? rule : pending_rules[p_count - 2];
++            __nomount_inject_child_locked(__nomount_get_or_create_dir(current_parent_ino, current_parent_dev),
++                                          t_rule, child_name, child_name_len, child_name_hash,
++                                          (current_flags & NM_FLAG_IS_DIR) ? DT_DIR : DT_REG, t_rule->v_hash);
++            break;
++        }
++
++        if (likely(kern_path(v_tmp, LOOKUP_FOLLOW, &p_path) == 0)) {
++            inherited_dev = p_path.dentry->d_sb->s_dev;
++            if (p_path.dentry->d_sb->s_op->statfs) {
++                struct kstatfs st;
++                p_path.dentry->d_sb->s_op->statfs(p_path.dentry, &st);
++                inherited_fs_type = st.f_type;
++            } else {
++                inherited_fs_type = p_path.dentry->d_sb->s_magic;
++            }
++            current_parent_ino = d_backing_inode(p_path.dentry)->i_ino;
++            current_parent_dev = d_backing_inode(p_path.dentry)->i_sb->s_dev;
++            child_name = slash_v + 1;
++            child_name_len = strlen(child_name);
++            child_name_hash = full_name_hash(NULL, child_name, child_name_len);
++            t_rule = (p_count == 1) ? rule : pending_rules[p_count - 2];
++            __nomount_inject_child_locked(__nomount_get_or_create_dir(current_parent_ino, current_parent_dev),
++                                          t_rule, child_name, child_name_len, child_name_hash,
++                                          (current_flags & NM_FLAG_IS_DIR) ? DT_DIR : DT_REG, t_rule->v_hash);
++            path_put(&p_path);
++            break; 
++        } else {
++            pending_rules[p_count - 1] = kmem_cache_alloc(nm_rule_cachep, GFP_KERNEL);
++            if (unlikely(!pending_rules[p_count - 1])) {
++                err = -ENOMEM;
++                break;
++            }
++
++            irule = pending_rules[p_count - 1];
++
++            INIT_LIST_HEAD(&irule->list);
++            INIT_HLIST_NODE(&irule->vpath_node);
++            INIT_HLIST_NODE(&irule->basename_node);
++
++            irule->virtual_path = kmemdup_nul(v_tmp, cur_v_len, GFP_KERNEL);
++            irule->real_path = slash_r ? kmemdup_nul(r_tmp, cur_r_len, GFP_KERNEL) : kstrdup("/", GFP_KERNEL);
++            if (unlikely(!irule->virtual_path || !irule->real_path)) {
++                if (irule->virtual_path) kfree(irule->virtual_path);
++                if (irule->real_path) kfree(irule->real_path);
++                kmem_cache_free(nm_rule_cachep, irule);
++                pending_rules[p_count - 1] = NULL;
++                err = -ENOMEM;
++                break;
++            }
++
++            b_slash = strrchr(irule->virtual_path, '/');
++            b_name_inter = b_slash ? b_slash + 1 : irule->virtual_path;
++            irule->basename = b_name_inter;
++            irule->b_len = (u16)strlen(b_name_inter);
++            irule->v_hash = h_inter;
++            irule->flags = NM_FLAG_IS_DIR;
++
++            irule->virt_node.dev = 0;
++            irule->virt_node.ino = (unsigned long)h_inter;
++            irule->virt_node.len = (u16)cur_v_len;
++            irule->virt_node.type = NM_INO_TYPE_VIRTUAL;
++            irule->real_node.ino = 0;
++            irule->real_node.dev = 0;
++            irule->real_node.len = (u16)(slash_r ? cur_r_len : 1);
++            irule->real_node.type = NM_INO_TYPE_REAL;
++
++            if (slash_r) {
++                if (likely(kern_path(irule->real_path, LOOKUP_FOLLOW, &r_path_struct) == 0)) {
++                    irule->real_node.ino = d_backing_inode(r_path_struct.dentry)->i_ino;
++                    irule->real_node.dev = r_path_struct.dentry->d_sb->s_dev;
++                    path_put(&r_path_struct);
++                }
++            }
++        }
++        current_flags = NM_FLAG_IS_DIR;
++    }
++
++    while (p_count > 0) {
++        p_count--;
++        if (slashes_v[p_count]) *slashes_v[p_count] = '/';
++        if (slashes_r[p_count]) *slashes_r[p_count] = '/';
++
++        if (pending_rules[p_count]) {
++            irule = pending_rules[p_count];
++
++            if (likely(err == 0)) {
++                u32 bh = full_name_hash(NULL, irule->basename, irule->b_len);
++                irule->virt_node.dev = inherited_dev;
++                irule->v_fs_type = inherited_fs_type;
++
++                hash_add_rcu(nomount_basenames_ht, &irule->basename_node, bh);
++                hash_add_rcu(nomount_rules_ht, &irule->vpath_node, irule->v_hash);
++                if (irule->real_node.ino) hash_add_rcu(nomount_inodes_ht, &irule->real_node.node, irule->real_node.ino);
++                hash_add_rcu(nomount_inodes_ht, &irule->virt_node.node, irule->virt_node.ino);
++                
++                list_add_tail_rcu(&irule->list, &nomount_rules_list);
++                atomic_inc(&nm_active_rules);
++                if (atomic_read(&nm_active_rules) == 1) static_branch_enable(&nomount_active_rules);
++            } else {
++                kfree(irule->virtual_path);
++                kfree(irule->real_path);
++                kmem_cache_free(nm_rule_cachep, irule);
++            }
++        }
++    }
++
++    if (likely(err == 0)) {
++        rule->virt_node.dev = inherited_dev;
++        rule->v_fs_type = inherited_fs_type;
++    }
++
++    return err;
++}
++
++/*** Rule Operations ***/
++
++static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len, u16 r_len, u32 flags)
++{
++    struct nomount_rule *rule, *existing, *victim = NULL;
++    struct path path_main, r_path_struct_main;
++    struct dentry *r_path_dentry = NULL;
++    char *slash;
++    const char *b_name;
++    u32 hash, b_hash;
++    int err = 0;
++    bool v_path_exists = false; 
++
++    if (!v_path || !r_path) return -EINVAL;
++
++    hash = full_name_hash(NULL, v_path, v_len);
++    rule = kmem_cache_alloc(nm_rule_cachep, GFP_KERNEL);
++    if (!rule)
++        return -ENOMEM;
++
++    rule->virtual_path = kmemdup_nul(v_path, v_len, GFP_KERNEL);
++    rule->real_path = kmemdup_nul(r_path, r_len, GFP_KERNEL);
++
++    if (!rule->virtual_path || !rule->real_path) {
++        if (rule->virtual_path) kfree(rule->virtual_path);
++        if (rule->real_path) kfree(rule->real_path);
++        kmem_cache_free(nm_rule_cachep, rule);
++        return -ENOMEM;
++    }
++
++    INIT_LIST_HEAD(&rule->list);
++    INIT_HLIST_NODE(&rule->vpath_node);
++    INIT_HLIST_NODE(&rule->basename_node);
++
++    slash = strrchr(rule->virtual_path, '/');
++    b_name = slash ? slash + 1 : rule->virtual_path;
++    rule->basename = b_name;
++    rule->b_len = strlen(b_name);
++    rule->v_hash = hash;
++    rule->flags = flags;
++
++    rule->real_node.ino = 0;
++    rule->real_node.dev = 0;
++    rule->real_node.len = r_len;
++    rule->real_node.type = NM_INO_TYPE_REAL;
++    rule->virt_node.ino = 0;
++    rule->virt_node.dev = 0;
++    rule->virt_node.len = v_len;
++    rule->virt_node.type = NM_INO_TYPE_VIRTUAL;
++
++    if (kern_path(rule->real_path, LOOKUP_FOLLOW, &r_path_struct_main) == 0) {
++        struct inode *r_inode = d_backing_inode(r_path_struct_main.dentry);
++        rule->real_node.ino = r_inode->i_ino;
++        rule->real_node.dev = r_path_struct_main.dentry->d_sb->s_dev;
++        if (S_ISDIR(r_inode->i_mode)) rule->flags |= NM_FLAG_IS_DIR;
++        r_path_dentry = dget(r_path_struct_main.dentry);
++        path_put(&r_path_struct_main);
++    }
++
++    if (kern_path(rule->virtual_path, LOOKUP_FOLLOW, &path_main) == 0) {
++        rule->virt_node.ino = d_backing_inode(path_main.dentry)->i_ino;
++        rule->virt_node.dev = path_main.dentry->d_sb->s_dev;
++        if (path_main.dentry->d_sb->s_op->statfs) {
++            struct kstatfs st;
++            path_main.dentry->d_sb->s_op->statfs(path_main.dentry, &st);
++            rule->v_fs_type = st.f_type;
++        } else {
++            rule->v_fs_type = path_main.dentry->d_sb->s_magic;
++        }
++        path_put(&path_main);
++        v_path_exists = true;
++        nm_debug("Resolved physical backing for %s (ino: %lu)\n", rule->virtual_path, rule->virt_node.ino);
++    } else {
++        rule->virt_node.ino = (unsigned long)hash;
++    }
++
++    mutex_lock(&nomount_write_mutex);
++    hash_for_each_possible(nomount_rules_ht, existing, vpath_node, hash) {
++        if (existing->v_hash == hash && existing->virt_node.len == v_len &&
++             memcmp(existing->virtual_path, rule->virtual_path, v_len) == 0) {
++            hash_del_rcu(&existing->vpath_node);
++            hash_del_rcu(&existing->basename_node);
++            if (existing->real_node.ino) hash_del_rcu(&existing->real_node.node);
++            if (existing->virt_node.ino) hash_del_rcu(&existing->virt_node.node);
++            list_del_rcu(&existing->list);
++            atomic_dec(&nm_active_rules);
++            victim = existing;
++            nm_info("Shadowing existing rule for: %s\n", rule->virtual_path);
++            break;
++        }
++    }
++
++    if (!v_path_exists) {
++        err = nomount_generate_virtual_topology(rule);
++        if (err != 0) {
++            mutex_unlock(&nomount_write_mutex);
++            if (r_path_dentry) dput(r_path_dentry);
++            kfree(rule->virtual_path);
++            kfree(rule->real_path);
++            kmem_cache_free(nm_rule_cachep, rule);
++            return err;
++        }
++    }
++    
++    if (r_path_dentry)
++        __nomount_collect_parents(rule, r_path_dentry);
++
++    b_hash = full_name_hash(NULL, rule->basename, rule->b_len);
++    hash_add_rcu(nomount_basenames_ht, &rule->basename_node, b_hash);
++    hash_add_rcu(nomount_rules_ht, &rule->vpath_node, hash);
++
++    if (rule->real_node.ino)
++        hash_add_rcu(nomount_inodes_ht, &rule->real_node.node, rule->real_node.ino);
++
++    if (rule->virt_node.ino)
++        hash_add_rcu(nomount_inodes_ht, &rule->virt_node.node, rule->virt_node.ino);
++
++    list_add_tail_rcu(&rule->list, &nomount_rules_list);
++    atomic_inc(&nm_active_rules);
++    if (atomic_read(&nm_active_rules) == 1) static_branch_enable(&nomount_active_rules);
++    mutex_unlock(&nomount_write_mutex);
++
++    if (unlikely(victim)) {
++        synchronize_rcu();
++        kfree(victim->virtual_path);
++        kfree(victim->real_path);
++        kmem_cache_free(nm_rule_cachep, victim);
++    }
++
++    nm_info("Successfully added rule: %s -> %s\n", rule->virtual_path, rule->real_path);
++    return 0;
++}
++
++static void __nomount_del_rule(const char *v_path, size_t v_len,
++                               struct list_head *r_victims,
++                               struct hlist_head *d_victims)
++{
++    struct nomount_rule *rule;
++    u32 hash = full_name_hash(NULL, v_path, v_len);
++
++    hash_for_each_possible(nomount_rules_ht, rule, vpath_node, hash) {
++        if (rule->v_hash == hash && rule->virt_node.len == v_len &&
++            memcmp(rule->virtual_path, v_path, v_len) == 0) {
++            hash_del_rcu(&rule->vpath_node);
++            hash_del_rcu(&rule->basename_node);
++            if (rule->real_node.ino) hash_del_rcu(&rule->real_node.node);
++            if (rule->virt_node.ino) hash_del_rcu(&rule->virt_node.node);
++            list_del_rcu(&rule->list);
++            atomic_dec(&nm_active_rules);
++            if (atomic_read(&nm_active_rules) == 0) static_branch_disable(&nomount_active_rules);
++            list_add_tail(&rule->list, r_victims);
++            if (rule->parent_dir)
++                __nomount_delete_child_locked(rule->parent_dir, hash, d_victims);
++            break;
++        }
++    }
++}
++
++static void __nomount_clear_all(void)
++{
++    struct nomount_rule *rule, *tmp_rule;
++    struct nomount_dir_node *dir_node, *tmp_dir;
++    struct nomount_uid_node *uid_node;
++    struct nm_inode_node *inode_node;
++    struct hlist_node *hlist_tmp;
++    struct nm_child_array *array;
++    LIST_HEAD(rule_victims);
++    LIST_HEAD(dir_victims);
++    HLIST_HEAD(uid_victims);
++    int bkt;
++
++    list_for_each_entry_safe(rule, tmp_rule, &nomount_rules_list, list) {
++        hash_del_rcu(&rule->vpath_node);
++        hash_del_rcu(&rule->basename_node);
++        if (rule->real_node.ino) hash_del_rcu(&rule->real_node.node);
++        if (rule->virt_node.ino) hash_del_rcu(&rule->virt_node.node);
++        list_move_tail(&rule->list, &rule_victims);
++    }
++
++    hash_for_each_safe(nomount_uid_ht, bkt, hlist_tmp, uid_node, node) {
++        hash_del_rcu(&uid_node->node);
++        hlist_add_head(&uid_node->node, &uid_victims);
++    }
++
++    hash_for_each_safe(nomount_inodes_ht, bkt, hlist_tmp, inode_node, node) {
++        if (inode_node->type & NM_INO_TYPE_DIR) {
++            dir_node = container_of(inode_node, struct nomount_dir_node, dir);
++            hash_del_rcu(&inode_node->node);
++            array = rcu_dereference_protected(dir_node->child_array, 1);
++            if (array) kfree_rcu(array, rcu);
++            if (dir_node->is_private) list_del_rcu(&dir_node->private_list);
++            list_add_tail(&dir_node->private_list, &dir_victims);
++        }
++    }
++
++    atomic_set(&nm_active_rules, 0);
++    atomic_set(&nm_active_dirs, 0);
++    atomic_set(&nm_active_uids, 0);
++    static_branch_disable(&nomount_active_rules);
++    static_branch_disable(&nomount_active_dirs);
++    static_branch_disable(&nomount_active_uids);
++    INIT_LIST_HEAD(&nomount_private_dirs_list);
++    synchronize_rcu();
++
++    list_for_each_entry_safe(dir_node, tmp_dir, &dir_victims, private_list) {
++        kfree(dir_node->dir_path);
++        kmem_cache_free(nm_dir_cachep, dir_node);
++    }
++    list_for_each_entry_safe(rule, tmp_rule, &rule_victims, list) {
++        kfree(rule->virtual_path);
++        kfree(rule->real_path);
++        kmem_cache_free(nm_rule_cachep, rule);
++    }
++    hlist_for_each_entry_safe(uid_node, hlist_tmp, &uid_victims, node) {
++        kmem_cache_free(nm_uid_cachep, uid_node);
++    }
++}
++
++/*** Generic Netlink API ***/
++
++static struct genl_family nomount_genl_family;
++
++static int nomount_genl_add_rule(struct sk_buff *skb, struct genl_info *info)
++{
++    if (info->attrs[NOMOUNT_ATTR_PAYLOAD]) {
++        struct nlattr *attr = info->attrs[NOMOUNT_ATTR_PAYLOAD];
++        const char *data = nla_data(attr);
++        char *v_buf = __getname();
++        char *r_buf = __getname();
++        int len = nla_len(attr);
++        int pos = 0, err = 0;
++
++        if (!v_buf || !r_buf) {
++            if (v_buf) __putname(v_buf);
++            if (r_buf) __putname(r_buf);
++            return -ENOMEM;
++        }
++
++        while (pos + 8 <= len) {
++            u32 flags = get_unaligned((const u32 *)(data + pos));
++            u16 vp_len = get_unaligned((const u16 *)(data + pos + 4));
++            u16 rp_len = get_unaligned((const u16 *)(data + pos + 6));
++            pos += 8;
++
++            if (pos + vp_len + rp_len > len) break;
++            if (unlikely(vp_len >= PATH_MAX || rp_len >= PATH_MAX)) break;
++
++            memcpy(v_buf, data + pos, vp_len);
++            v_buf[vp_len] = '\0';
++            pos += vp_len;
++            memcpy(r_buf, data + pos, rp_len);
++            r_buf[rp_len] = '\0';
++            pos += rp_len;
++
++            err = __nomount_add_rule(v_buf, r_buf, vp_len, rp_len, flags);
++            if (err) {
++                nm_err("Failed to inject %s -> %s (err: %d). Skipping.\n", v_buf, r_buf, err);
++            }
++        }
++
++        __putname(v_buf);
++        __putname(r_buf);
++        return 0;
++
++    } else if (info->attrs[NOMOUNT_ATTR_VIRTUAL_PATH] && info->attrs[NOMOUNT_ATTR_REAL_PATH]) {
++        char *v_str = nla_data(info->attrs[NOMOUNT_ATTR_VIRTUAL_PATH]);
++        char *r_str = nla_data(info->attrs[NOMOUNT_ATTR_REAL_PATH]);
++        u32 flags = info->attrs[NOMOUNT_ATTR_FLAGS] ? nla_get_u32(info->attrs[NOMOUNT_ATTR_FLAGS]) : 0;
++        return __nomount_add_rule(v_str, r_str, strlen(v_str), strlen(r_str), flags);
++    }
++
++    return -EINVAL;
++}
++
++static int nomount_genl_del_rule(struct sk_buff *skb, struct genl_info *info)
++{
++    LIST_HEAD(r_victims);
++    HLIST_HEAD(d_victims);
++    struct nomount_rule *rule, *tmp_r;
++    struct nomount_dir_node *dir;
++    struct hlist_node *tmp_d;
++    struct nm_inode_node *inode_node;
++
++    if (info->attrs[NOMOUNT_ATTR_PAYLOAD]) {
++        struct nlattr *attr = info->attrs[NOMOUNT_ATTR_PAYLOAD];
++        const char *data = nla_data(attr);
++        int len = nla_len(attr);
++        int pos = 0;
++
++        mutex_lock(&nomount_write_mutex);
++        while (pos + 2 <= len) {
++            u16 vp_len = get_unaligned((const u16 *)(data + pos));
++            pos += 2; if (pos + vp_len > len) break;
++            __nomount_del_rule(data + pos, vp_len, &r_victims, &d_victims);
++            pos += vp_len;
++        }
++        mutex_unlock(&nomount_write_mutex);
++    } else if (info->attrs[NOMOUNT_ATTR_VIRTUAL_PATH]) {
++        char *v_path = nla_data(info->attrs[NOMOUNT_ATTR_VIRTUAL_PATH]);
++        mutex_lock(&nomount_write_mutex);
++        __nomount_del_rule(v_path, strlen(v_path), &r_victims, &d_victims);
++        mutex_unlock(&nomount_write_mutex);
++    } else {
++        return -EINVAL;
++    }
++
++    if (list_empty(&r_victims)) return -ENOENT;
++    synchronize_rcu();
++
++    hlist_for_each_entry_safe(inode_node, tmp_d, &d_victims, node) {
++        dir = container_of(inode_node, struct nomount_dir_node, dir);
++        kfree(dir->dir_path);
++        kmem_cache_free(nm_dir_cachep, dir);
++    }
++
++    list_for_each_entry_safe(rule, tmp_r, &r_victims, list) {
++        nm_info("Deleted rule for: %s\n", rule->virtual_path);
++        kfree(rule->virtual_path);
++        kfree(rule->real_path);
++        kmem_cache_free(nm_rule_cachep, rule);
++    }
++
++    return 0;
++}
++
++static int nomount_genl_clear_rules(struct sk_buff *skb, struct genl_info *info)
++{
++    mutex_lock(&nomount_write_mutex);
++    __nomount_clear_all();
++    mutex_unlock(&nomount_write_mutex);
++    nm_info("Cleared all active rules and UIDs\n");
++    return 0;
++}
++
++static int nomount_genl_dump_rules(struct sk_buff *skb, struct netlink_callback *cb)
++{
++    struct nomount_rule *rule;
++    int idx = 0; void *hdr;
++    int start_idx = cb->args[0];
++
++    rcu_read_lock();
++    list_for_each_entry_rcu(rule, &nomount_rules_list, list) {
++        if (idx < start_idx) { idx++; continue; }
++
++        hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
++                          &nomount_genl_family, NLM_F_MULTI, NOMOUNT_CMD_GET_LIST);
++        if (!hdr)
++            break;
++
++        if (nla_put_string(skb, NOMOUNT_ATTR_VIRTUAL_PATH, rule->virtual_path) ||
++             nla_put_string(skb, NOMOUNT_ATTR_REAL_PATH, rule->real_path) ||
++             nla_put_u32(skb, NOMOUNT_ATTR_FLAGS, rule->flags)) {
++
++            genlmsg_cancel(skb, hdr);
++            break;
++        }
++
++        genlmsg_end(skb, hdr);
++        idx++;
++    }
++    rcu_read_unlock();
++
++    cb->args[0] = idx; 
++    
++    return skb->len;
++}
++
++static int nomount_genl_add_uid(struct sk_buff *skb, struct genl_info *info)
++{
++    unsigned int uid;
++    struct nomount_uid_node *entry;
++
++    if (!info->attrs[NOMOUNT_ATTR_UID])
++        return -EINVAL;
++
++    uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
++
++    if (nomount_is_uid_blocked(uid)) 
++        return -EEXIST;
++
++    entry = kmem_cache_alloc(nm_uid_cachep, GFP_KERNEL);
++    if (!entry) return -ENOMEM;
++    entry->uid = uid;
++    
++    mutex_lock(&nomount_write_mutex);
++    hash_add_rcu(nomount_uid_ht, &entry->node, uid);
++    atomic_inc(&nm_active_uids);
++    if (atomic_read(&nm_active_uids) == 1) static_branch_enable(&nomount_active_uids);
++    mutex_unlock(&nomount_write_mutex);
++    
++    nm_info("Successfully added blocked UID: %u\n", uid);
++    return 0;
++}
++
++static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
++{
++    unsigned int uid;
++    struct nomount_uid_node *entry;
++    struct hlist_node *tmp;
++    int bkt;
++    bool found = false;
++
++    if (!info->attrs[NOMOUNT_ATTR_UID])
++        return -EINVAL;
++
++    uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
++
++    mutex_lock(&nomount_write_mutex);
++    hash_for_each_safe(nomount_uid_ht, bkt, tmp, entry, node) {
++        if (entry->uid == uid) {
++            hash_del_rcu(&entry->node);
++            found = true;
++            break; 
++        }
++    }
++    atomic_dec(&nm_active_uids);
++    if (atomic_read(&nm_active_uids) == 0) static_branch_disable(&nomount_active_uids);
++    mutex_unlock(&nomount_write_mutex);
++
++    if (found && entry) {
++        synchronize_rcu();
++        kmem_cache_free(nm_uid_cachep, entry);
++    }
++
++    nm_info("Successfully remove blocked UID: %u\n", uid);
++    return found ? 0 : -ENOENT;
++}
++
++static int nomount_genl_get_version(struct sk_buff *skb, struct genl_info *info)
++{
++    struct sk_buff *msg;
++    void *hdr;
++    int ret;
++
++    msg = genlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
++    if (!msg) return -ENOMEM;
++
++    hdr = genlmsg_put_reply(msg, info, &nomount_genl_family, 0, info->genlhdr->cmd);
++    if (!hdr) {
++        nlmsg_free(msg);
++        return -EMSGSIZE;
++    }
++
++    ret = nla_put_u32(msg, NOMOUNT_ATTR_VERSION, NOMOUNT_VERSION);
++    if (ret) {
++        genlmsg_cancel(msg, hdr);
++        nlmsg_free(msg);
++        return ret;
++    }
++
++    genlmsg_end(msg, hdr);
++    return genlmsg_reply(msg, info);
++}
++
++static const struct nla_policy nomount_genl_policy[NOMOUNT_ATTR_MAX + 1] = {
++    [NOMOUNT_ATTR_VIRTUAL_PATH] = { .type = NLA_NUL_STRING, .len = PATH_MAX },
++    [NOMOUNT_ATTR_REAL_PATH]    = { .type = NLA_NUL_STRING, .len = PATH_MAX },
++    [NOMOUNT_ATTR_FLAGS]        = { .type = NLA_U32 },
++    [NOMOUNT_ATTR_UID]          = { .type = NLA_U32 },
++    [NOMOUNT_ATTR_VERSION]      = { .type = NLA_U32 },
++    [NOMOUNT_ATTR_PAYLOAD]      = { .type = NLA_BINARY },
++};
++
++static const struct genl_ops nomount_genl_ops[] = {
++    { .cmd = NOMOUNT_CMD_ADD_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_rule, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_DEL_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_rule, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_CLEAR_ALL, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_clear_rules, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_ADD_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_DEL_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_GET_LIST, .flags = GENL_ADMIN_PERM, .doit = NULL, .dumpit = nomount_genl_dump_rules, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_GET_VERSION, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_get_version, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++};
++
++static struct genl_family nomount_genl_family = {
++    .name = NOMOUNT_GENL_NAME,
++    .version = NOMOUNT_GENL_VERSION,
++    .maxattr = NOMOUNT_ATTR_MAX,
++    NM_FAMILY_POLICY(nomount_genl_policy)
++    .netnsok = true,
++    .module = THIS_MODULE,
++    .ops = nomount_genl_ops,
++    .n_ops = ARRAY_SIZE(nomount_genl_ops),
++};
++
++static int __init nomount_init(void) {
++    int ret;
++
++    hash_init(nomount_rules_ht);
++    hash_init(nomount_basenames_ht);
++    hash_init(nomount_uid_ht);
++    hash_init(nomount_inodes_ht);
++
++    nm_rule_cachep = kmem_cache_create("nm_rules", sizeof(struct nomount_rule), 0, SLAB_HWCACHE_ALIGN, NULL);
++    nm_dir_cachep = kmem_cache_create("nm_dirs", sizeof(struct nomount_dir_node), 0, SLAB_HWCACHE_ALIGN, NULL);
++    nm_uid_cachep = kmem_cache_create("nm_uids", sizeof(struct nomount_uid_node), 0, SLAB_HWCACHE_ALIGN, NULL);
++
++    if (!nm_rule_cachep || !nm_dir_cachep || !nm_uid_cachep) {
++        nm_err("Failed to allocate memory slab caches\n");
++        if (nm_rule_cachep) kmem_cache_destroy(nm_rule_cachep);
++        if (nm_dir_cachep) kmem_cache_destroy(nm_dir_cachep);
++        if (nm_uid_cachep) kmem_cache_destroy(nm_uid_cachep);
++        return -ENOMEM;
++    }
++
++    ret = genl_register_family(&nomount_genl_family);
++    if (ret) {
++        nm_err("Failed to register Generic Netlink family (err: %d)\n", ret);
++        kmem_cache_destroy(nm_rule_cachep);
++        kmem_cache_destroy(nm_dir_cachep);
++        kmem_cache_destroy(nm_uid_cachep);
++        return ret;
++    }
++
++    nm_info("Loaded successfully\n");
++    return 0;
++}
++
++fs_initcall(nomount_init);
+diff --git a/fs/nomount.h b/fs/nomount.h
+new file mode 100644
+index 000000000..9fa3e8a93
+--- /dev/null
++++ b/fs/nomount.h
+@@ -0,0 +1,144 @@
++#ifndef _LINUX_NOMOUNT_H
++#define _LINUX_NOMOUNT_H
++
++#include <linux/types.h>
++#include <linux/list.h>
++#include <linux/hashtable.h>
++#include <linux/atomic.h>
++#include <net/sock.h>
++#include <net/genetlink.h>
++#include <linux/version.h>
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
++#include <linux/unaligned.h>
++#else
++#include <asm/unaligned.h>
++#endif
++#include <linux/jump_label.h>
++
++#define NOMOUNT_VERSION    10
++#define NOMOUNT_HASH_BITS  12
++#define NOMOUNT_UID_HASH_BITS 4
++#define NM_FLAG_IS_DIR      (1 << 1)
++#define NM_INO_TYPE_REAL    (1 << 0)
++#define NM_INO_TYPE_VIRTUAL (1 << 1)
++#define NM_INO_TYPE_DIR     (1 << 2)
++
++static DEFINE_HASHTABLE(nomount_rules_ht,     NOMOUNT_HASH_BITS);
++static DEFINE_HASHTABLE(nomount_inodes_ht,    NOMOUNT_HASH_BITS);
++static DEFINE_HASHTABLE(nomount_basenames_ht, NOMOUNT_HASH_BITS);
++static DEFINE_HASHTABLE(nomount_uid_ht,       NOMOUNT_UID_HASH_BITS);
++static LIST_HEAD(nomount_rules_list);
++static LIST_HEAD(nomount_private_dirs_list);
++static DEFINE_MUTEX(nomount_write_mutex);
++
++struct nm_inode_node {
++    struct hlist_node node;
++    unsigned long ino;
++    dev_t dev;
++    u8 type;
++    u16 len;
++};
++
++struct nomount_child_name {
++    unsigned long fake_ino;
++    u16 name_len;
++    u8 d_type;
++    char name[256];
++};
++
++struct nm_child_array {
++    atomic_t refcnt;
++    u32 num_children;
++    struct rcu_head rcu;
++    struct nomount_child_name entries[]; /* Flexible array member */
++};
++
++struct nomount_dir_node {
++    struct nm_inode_node dir;
++    struct list_head private_list;
++    struct nm_child_array __rcu *child_array; 
++    char *dir_path;
++    bool is_private;
++};
++
++struct nomount_rule {
++    struct list_head list;
++    struct nm_inode_node real_node; 
++    struct nm_inode_node virt_node;
++    struct hlist_node vpath_node;
++    struct hlist_node basename_node;
++    struct nomount_dir_node *parent_dir;
++    char *virtual_path;
++    char *real_path;
++    const char *basename;
++    u32 v_fs_type;
++    u32 v_hash;
++    u32 b_hash;
++    u16 b_len;
++    u8  flags;
++};
++
++struct nomount_uid_node {
++    struct hlist_node node;
++    uid_t uid;
++};
++
++/* VFS Hook Prototypes */
++char *nomount_handle_dpath(const struct path *path, char *buf, int buflen);
++int nomount_handle_permission(struct inode *inode, int mask);
++struct filename *nomount_handle_getname(struct filename *name);
++int nomount_handle_iterate_dir(struct file *file, struct dir_context *ctx);
++int nomount_handle_getattr(int ret, const struct path *path, struct kstat *stat);
++void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf);
++bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long *ino);
++
++/* ========================================================================= */
++/* NETLINK GENERIC PROTOCOL DEFINITIONS */
++/* ========================================================================= */
++
++#define NOMOUNT_GENL_NAME "nomount"
++#define NOMOUNT_GENL_VERSION 1
++
++/* Commands */
++enum {
++    NOMOUNT_CMD_UNSPEC = 0,
++    NOMOUNT_CMD_GET_VERSION,
++    NOMOUNT_CMD_ADD_RULE,
++    NOMOUNT_CMD_DEL_RULE,
++    NOMOUNT_CMD_CLEAR_ALL,
++    NOMOUNT_CMD_ADD_UID,
++    NOMOUNT_CMD_DEL_UID,
++    NOMOUNT_CMD_GET_LIST,
++    __NOMOUNT_CMD_MAX,
++};
++#define NOMOUNT_CMD_MAX (__NOMOUNT_CMD_MAX - 1)
++
++/* Attributes */
++enum {
++    NOMOUNT_ATTR_UNSPEC = 0,
++    NOMOUNT_ATTR_VIRTUAL_PATH,  /* String (NLA_NUL_STRING) */
++    NOMOUNT_ATTR_REAL_PATH,     /* String (NLA_NUL_STRING) */
++    NOMOUNT_ATTR_FLAGS,         /* u32 (NLA_U32) */
++    NOMOUNT_ATTR_UID,           /* u32 (NLA_U32) */
++    NOMOUNT_ATTR_VERSION,       /* u32 (NLA_U32) */
++    NOMOUNT_ATTR_PAYLOAD,       /* Binary payload for GET_LIST (NLA_BINARY) */
++    __NOMOUNT_ATTR_MAX,
++};
++
++#define NOMOUNT_ATTR_MAX (__NOMOUNT_ATTR_MAX - 1)
++
++/* * Compat macros for Generic Netlink Policy API changes.
++ * Linux 4.20 moved the policy pointer from genl_ops to genl_family.
++ */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
++#define NM_OPS_POLICY(p)    .policy = (p),
++#define NM_FAMILY_POLICY(p)
++#else
++#define NM_OPS_POLICY(p)
++#define NM_FAMILY_POLICY(p) .policy = (p),
++#endif
++
++/* Application UID start */
++#define AID_APP_START 10000
++
++#endif /* _LINUX_NOMOUNT_H */
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 839b6d686..c5354fc53 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -318,6 +318,10 @@ static void show_vma_header_prefix(struct seq_file *m,
+ 	seq_putc(m, ' ');
+ }
+ 
++#ifdef CONFIG_NOMOUNT
++extern bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long *ino);
++#endif
++
+ static void
+ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
+ {
+@@ -334,6 +338,9 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
+ 		struct inode *inode = file_inode(vma->vm_file);
+ 		dev = inode->i_sb->s_dev;
+ 		ino = inode->i_ino;
++#ifdef CONFIG_NOMOUNT
++		nomount_spoof_mmap_metadata(inode, &dev, &ino);
++#endif
+ 		pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
+ 	}
+ 
+diff --git a/fs/readdir.c b/fs/readdir.c
+index 09e8ed7d4..9332d6b0c 100644
+--- a/fs/readdir.c
++++ b/fs/readdir.c
+@@ -36,6 +36,9 @@
+ 	unsafe_copy_to_user(dst, src, len, label);		\
+ } while (0)
+ 
++#ifdef CONFIG_NOMOUNT
++extern int nomount_handle_iterate_dir(struct file *file, struct dir_context *ctx);
++#endif
+ 
+ int iterate_dir(struct file *file, struct dir_context *ctx)
+ {
+@@ -61,10 +64,14 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
+ 	res = -ENOENT;
+ 	if (!IS_DEADDIR(inode)) {
+ 		ctx->pos = file->f_pos;
++#ifdef CONFIG_NOMOUNT
++		res = nomount_handle_iterate_dir(file, ctx);
++#else
+ 		if (shared)
+ 			res = file->f_op->iterate_shared(file, ctx);
+ 		else
+ 			res = file->f_op->iterate(file, ctx);
++#endif
+ 		file->f_pos = ctx->pos;
+ 		fsnotify_access(file);
+ 		file_accessed(file);
+diff --git a/fs/stat.c b/fs/stat.c
+index c6a2e1098..5d53dffcf 100644
+--- a/fs/stat.c
++++ b/fs/stat.c
+@@ -100,6 +100,10 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
+ }
+ EXPORT_SYMBOL(vfs_getattr_nosec);
+ 
++#ifdef CONFIG_NOMOUNT
++extern int nomount_handle_getattr(int ret, const struct path *path, struct kstat *stat);
++#endif
++
+ /*
+  * vfs_getattr - Get the enhanced basic attributes of a file
+  * @path: The file of interest
+@@ -129,7 +133,11 @@ int vfs_getattr(const struct path *path, struct kstat *stat,
+ 	retval = security_inode_getattr(path);
+ 	if (retval)
+ 		return retval;
++#ifdef CONFIG_NOMOUNT
++    return nomount_handle_getattr(vfs_getattr_nosec(path, stat, request_mask, query_flags), path, stat);
++#else
+ 	return vfs_getattr_nosec(path, stat, request_mask, query_flags);
++#endif
+ }
+ EXPORT_SYMBOL(vfs_getattr);
+ 
+diff --git a/fs/statfs.c b/fs/statfs.c
+index d42b44dc0..6ad5106e1 100644
+--- a/fs/statfs.c
++++ b/fs/statfs.c
+@@ -11,6 +11,10 @@
+ #include <linux/compat.h>
+ #include "internal.h"
+ 
++#ifdef CONFIG_NOMOUNT
++extern void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf);
++#endif
++
+ static int flags_by_mnt(int mnt_flags)
+ {
+ 	int flags = 0;
+@@ -90,6 +94,9 @@ int vfs_statfs(const struct path *path, struct kstatfs *buf)
+ 	error = statfs_by_dentry(path->dentry, buf);
+ 	if (!error)
+ 		buf->f_flags = calculate_f_flags(path->mnt);
++#ifdef CONFIG_NOMOUNT
++	nomount_spoof_statfs(path, buf);
++#endif
+ 	return error;
+ }
+ EXPORT_SYMBOL(vfs_statfs);
+diff --git a/include/linux/sched.h.rej b/include/linux/sched.h.rej
+new file mode 100644
+index 000000000..d8a7a265a
+--- /dev/null
++++ b/include/linux/sched.h.rej
+@@ -0,0 +1,14 @@
++diff a/include/linux/sched.h b/include/linux/sched.h	(rejected hunks)
++@@ -512,6 +512,12 @@ struct sched_entity {
++ 	ANDROID_KABI_RESERVE(3);
++ 	ANDROID_KABI_RESERVE(4);
++ #endif // CONFIG_SCHED_BORE
+++
+++	/* EEVDF fields — appended at end to preserve KMI */
+++	u64				deadline;
+++	u64				min_deadline;
+++	s64				vlag;
+++	u64				slice;
++ };
++ 
++ struct sched_rt_entity {
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index a2171c521..faefc8919 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -3308,6 +3308,10 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
+ 	p->se.prev_sum_exec_runtime	= 0;
+ 	p->se.nr_migrations		= 0;
+ 	p->se.vruntime			= 0;
++	p->se.vlag			= 0;
++	p->se.slice			= sysctl_sched_min_granularity;
++	p->se.deadline			= 0;
++	p->se.min_deadline		= 0;
+ 	INIT_LIST_HEAD(&p->se.group_node);
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 215342b64..4eb9c7b3e 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -22,6 +22,7 @@
+  */
+ #include "sched.h"
+ 
++#include <linux/rbtree_augmented.h>
+ #include <trace/hooks/sched.h>
+ 
+ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
+@@ -543,12 +544,103 @@ static inline int entity_before(struct sched_entity *a,
+ 	return (s64)(a->vruntime - b->vruntime) < 0;
+ }
+ 
++#define __node_2_se(node) \
++	rb_entry((node), struct sched_entity, run_node)
++
++/*
++ * EEVDF: Weighted average of vruntime across all queued entities.
++ *
++ * avg_vruntime tracks sum-of-keys*weight, avg_load tracks sum-of-weights.
++ * Keys are relative to min_vruntime so they stay small.  The current entity
++ * is not in the tree, so every reader folds it in on the fly.
++ */
++static s64 entity_key(struct cfs_rq *cfs_rq, struct sched_entity *se)
++{
++	return (s64)(se->vruntime - cfs_rq->min_vruntime);
++}
++
++static void
++avg_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
++{
++	unsigned long weight = scale_load_down(se->load.weight);
++	s64 key = entity_key(cfs_rq, se);
++
++	cfs_rq->avg_vruntime += key * (long)weight;
++	cfs_rq->avg_load += weight;
++}
++
++static void
++avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_entity *se)
++{
++	unsigned long weight = scale_load_down(se->load.weight);
++	s64 key = entity_key(cfs_rq, se);
++
++	cfs_rq->avg_vruntime -= key * (long)weight;
++	cfs_rq->avg_load -= weight;
++}
++
++static inline
++void avg_vruntime_update(struct cfs_rq *cfs_rq, s64 delta)
++{
++	/*
++	 * v' = v + d  =>  avg_vruntime' = avg_vruntime - d * avg_load
++	 */
++	cfs_rq->avg_vruntime -= (s64)cfs_rq->avg_load * delta;
++}
++
++/*
++ * Compute the virtual time V = min_vruntime + weighted-avg(keys).
++ * This is the EEVDF "fair share" clock.
++ */
++u64 avg_vruntime(struct cfs_rq *cfs_rq)
++{
++	struct sched_entity *curr = cfs_rq->curr;
++	s64 avg = cfs_rq->avg_vruntime;
++	long load = cfs_rq->avg_load;
++
++	if (curr && curr->on_rq) {
++		unsigned long weight = scale_load_down(curr->load.weight);
++
++		avg += entity_key(cfs_rq, curr) * (long)weight;
++		load += weight;
++	}
++
++	if (load) {
++		/* sign-correct floor division */
++		if (avg < 0)
++			avg -= (load - 1);
++		avg = div_s64(avg, load);
++	}
++
++	return cfs_rq->min_vruntime + avg;
++}
++
++/*
++ * Check whether entity is eligible to run (vruntime <= V).
++ * Avoids division: checks avg >= key * load algebraically.
++ */
++int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
++{
++	struct sched_entity *curr = cfs_rq->curr;
++	s64 avg = cfs_rq->avg_vruntime;
++	long load = cfs_rq->avg_load;
++
++	if (curr && curr->on_rq) {
++		unsigned long weight = scale_load_down(curr->load.weight);
++
++		avg += entity_key(cfs_rq, curr) * (long)weight;
++		load += weight;
++	}
++
++	return avg >= entity_key(cfs_rq, se) * load;
++}
++
+ static void update_min_vruntime(struct cfs_rq *cfs_rq)
+ {
+ 	struct sched_entity *curr = cfs_rq->curr;
+ 	struct rb_node *leftmost = rb_first_cached(&cfs_rq->tasks_timeline);
+-
+ 	u64 vruntime = cfs_rq->min_vruntime;
++	u64 min_vrt;
+ 
+ 	if (curr) {
+ 		if (curr->on_rq)
+@@ -568,7 +660,11 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
+ 	}
+ 
+ 	/* ensure we never gain time by being placed backwards. */
+-	cfs_rq->min_vruntime = max_vruntime(cfs_rq->min_vruntime, vruntime);
++	min_vrt = max_vruntime(cfs_rq->min_vruntime, vruntime);
++	if (min_vrt != cfs_rq->min_vruntime) {
++		avg_vruntime_update(cfs_rq, min_vrt - cfs_rq->min_vruntime);
++		cfs_rq->min_vruntime = min_vrt;
++	}
+ #ifndef CONFIG_64BIT
+ 	smp_wmb();
+ 	cfs_rq->min_vruntime_copy = cfs_rq->min_vruntime;
+@@ -576,7 +672,45 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
+ }
+ 
+ /*
+- * Enqueue an entity into the rb-tree:
++ * EEVDF augmented rbtree: each node tracks min_deadline across its subtree
++ * so pick_eevdf() can find the eligible entity with the earliest deadline
++ * in O(log n).
++ */
++#define deadline_gt(field, lse, rse) \
++	((s64)((lse)->field - (rse)->field) > 0)
++
++static inline void __update_min_deadline(struct sched_entity *se,
++					 struct rb_node *node)
++{
++	if (node) {
++		struct sched_entity *rse = __node_2_se(node);
++		if (deadline_gt(min_deadline, se, rse))
++			se->min_deadline = rse->min_deadline;
++	}
++}
++
++/*
++ * se->min_deadline = min(se->deadline, left->min_deadline, right->min_deadline)
++ * Returns true (early exit) when min_deadline hasn't changed.
++ */
++static inline bool min_deadline_update(struct sched_entity *se, bool exit)
++{
++	u64 old_min_deadline = se->min_deadline;
++	struct rb_node *node = &se->run_node;
++
++	se->min_deadline = se->deadline;
++	__update_min_deadline(se, node->rb_right);
++	__update_min_deadline(se, node->rb_left);
++
++	return exit && se->min_deadline == old_min_deadline;
++}
++
++RB_DECLARE_CALLBACKS(static, min_deadline_cb,
++		     struct sched_entity, run_node, min_deadline,
++		     min_deadline_update);
++
++/*
++ * Enqueue an entity into the rb-tree (augmented with min_deadline):
+  */
+ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+@@ -584,8 +718,33 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	struct rb_node *parent = NULL;
+ 	struct sched_entity *entry;
+ 	bool leftmost = true;
++	s64 key;
+ 
+ 	trace_android_rvh_enqueue_entity(cfs_rq, se);
++
++	/*
++	 * GKI 5.10 CFS can produce entities whose vruntime is far from
++	 * min_vruntime (cgroup migration, throttle/unthrottle, vendor hooks).
++	 * Old CFS tolerates this because it only compares vruntimes.  EEVDF
++	 * multiplies entity_key by weight in avg_vruntime tracking; a key
++	 * beyond ~44 bits overflows s64 and corrupts the weighted average,
++	 * making every entity ineligible.
++	 *
++	 * Snap outlier vruntimes to min_vruntime so they enter the tree
++	 * without poisoning avg_vruntime.  The ±(1LL << 40) window is
++	 * ~1.1 trillion ns of virtual time — decades of normal operation.
++	 */
++	key = entity_key(cfs_rq, se);
++	if (unlikely(key > (1LL << 40) || key < -(1LL << 40))) {
++		s64 offset = se->deadline - se->vruntime;
++
++		se->vruntime = cfs_rq->min_vruntime;
++		se->deadline = se->vruntime + (offset > 0 ? offset : 0);
++	}
++
++	avg_vruntime_add(cfs_rq, se);
++	se->min_deadline = se->deadline;
++
+ 	/*
+ 	 * Find the right place in the rbtree:
+ 	 */
+@@ -605,14 +764,17 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	}
+ 
+ 	rb_link_node(&se->run_node, parent, link);
+-	rb_insert_color_cached(&se->run_node,
+-			       &cfs_rq->tasks_timeline, leftmost);
++	rb_insert_augmented_cached(&se->run_node,
++				   &cfs_rq->tasks_timeline, leftmost,
++				   &min_deadline_cb);
+ }
+ 
+ static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ {
+ 	trace_android_rvh_dequeue_entity(cfs_rq, se);
+-	rb_erase_cached(&se->run_node, &cfs_rq->tasks_timeline);
++	rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
++				  &min_deadline_cb);
++	avg_vruntime_sub(cfs_rq, se);
+ }
+ 
+ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+@@ -625,16 +787,6 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+ 	return rb_entry(left, struct sched_entity, run_node);
+ }
+ 
+-static struct sched_entity *__pick_next_entity(struct sched_entity *se)
+-{
+-	struct rb_node *next = rb_next(&se->run_node);
+-
+-	if (!next)
+-		return NULL;
+-
+-	return rb_entry(next, struct sched_entity, run_node);
+-}
+-
+ #ifdef CONFIG_SCHED_DEBUG
+ struct sched_entity *__pick_last_entity(struct cfs_rq *cfs_rq)
+ {
+@@ -738,16 +890,6 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	return slice;
+ }
+ 
+-/*
+- * We calculate the vruntime slice of a to-be-inserted task.
+- *
+- * vs = s/w
+- */
+-static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+-{
+-	return calc_delta_fair(sched_slice(cfs_rq, se), se);
+-}
+-
+ #include "pelt.h"
+ #ifdef CONFIG_SMP
+ 
+@@ -856,6 +998,34 @@ static void update_tg_load_avg(struct cfs_rq *cfs_rq)
+ }
+ #endif /* CONFIG_SMP */
+ 
++/*
++ * EEVDF: when the current entity exhausts its slice (vruntime crosses
++ * its deadline), assign a fresh slice + deadline and request reschedule.
++ */
++static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
++
++static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
++{
++	if ((s64)(se->vruntime - se->deadline) < 0)
++		return;
++
++	/*
++	 * For EEVDF the virtual time slice is determined by the scheduling
++	 * period — the same sched_slice() CFS already uses.
++	 */
++	se->slice = sched_slice(cfs_rq, se);
++	se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
++
++	/*
++	 * The task has consumed its slice; if there are other runnable
++	 * entities, ask for a reschedule so pick_eevdf() can re-evaluate.
++	 */
++	if (cfs_rq->nr_running > 1) {
++		resched_curr(rq_of(cfs_rq));
++		clear_buddies(cfs_rq, se);
++	}
++}
++
+ /*
+  * Update the current task's runtime statistics.
+  */
+@@ -3109,6 +3279,8 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+ 		/* commit outstanding execution time */
+ 		if (cfs_rq->curr == se)
+ 			update_curr(cfs_rq);
++		else
++			avg_vruntime_sub(cfs_rq, se);
+ 		update_load_sub(&cfs_rq->load, se->load.weight);
+ 	}
+ 	dequeue_load_avg(cfs_rq, se);
+@@ -3125,8 +3297,11 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+ #endif
+ 
+ 	enqueue_load_avg(cfs_rq, se);
+-	if (se->on_rq)
++	if (se->on_rq) {
+ 		update_load_add(&cfs_rq->load, se->load.weight);
++		if (se != cfs_rq->curr)
++			avg_vruntime_add(cfs_rq, se);
++	}
+ 
+ }
+ 
+@@ -4303,57 +4478,75 @@ static inline bool entity_is_long_sleeper(struct sched_entity *se)
+ 	return false;
+ }
+ 
++/*
++ * EEVDF: save the entity's lag at dequeue time.
++ * Lag = V - v_i.  Clamped to ±2 slices to prevent unbounded accumulation.
++ */
++static void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
++{
++	s64 lag, limit;
++
++	SCHED_WARN_ON(!se->on_rq);
++	lag = avg_vruntime(cfs_rq) - se->vruntime;
++
++	limit = calc_delta_fair(max_t(u64, 2 * se->slice, TICK_NSEC), se);
++	se->vlag = clamp(lag, -limit, limit);
++}
++
++/*
++ * EEVDF placement: restore vruntime from saved lag, inflating to compensate
++ * for the effect of adding the entity on V.
++ *
++ * Adding entity with weight w_i and virtual lag vl_i changes V:
++ *   V' = V - w_i * vl_i / (W + w_i)
++ * To preserve original lag after insertion, inflate:
++ *   vl_i = (W + w_i) * vl'_i / W
++ */
+ static void
+ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
+ {
+-	u64 vruntime = cfs_rq->min_vruntime;
++	u64 vslice, vruntime = avg_vruntime(cfs_rq);
++	s64 lag = 0;
++
++	se->slice = sched_slice(cfs_rq, se);
++	vslice = calc_delta_fair(se->slice, se);
+ 
+ 	/*
+-	 * The 'current' period is already promised to the current tasks,
+-	 * however the extra weight of the new task will slow them down a
+-	 * little, place the new task so that it fits in the slot that
+-	 * stays open at the end.
++	 * PLACE_LAG: on wakeup, restore the entity's fairness debt/credit.
++	 * On initial placement (fork), start fresh at V.
+ 	 */
+-	if (initial && sched_feat(START_DEBIT))
+-		vruntime += sched_vslice(cfs_rq, se);
++	if (sched_feat(PLACE_LAG) && cfs_rq->nr_running && !initial) {
++		struct sched_entity *curr = cfs_rq->curr;
++		unsigned long load;
+ 
+-	/* sleeps up to a single latency don't count. */
+-	if (!initial) {
+-		unsigned long thresh = sysctl_sched_latency;
++		lag = se->vlag;
+ 
+ 		/*
+-		 * Halve their sleep time's effect, to allow
+-		 * for a gentler effect of sleepers:
++		 * Inflate lag to compensate for V shift on insertion.
+ 		 */
+-		if (sched_feat(GENTLE_FAIR_SLEEPERS))
+-			thresh >>= 1;
+-
+-		vruntime -= thresh;
+-	}
+-
+-	/*
+-	 * Pull vruntime of the entity being placed to the base level of
+-	 * cfs_rq, to prevent boosting it if placed backwards.
+-	 * However, min_vruntime can advance much faster than real time, with
+-	 * the extreme being when an entity with the minimal weight always runs
+-	 * on the cfs_rq. If the waking entity slept for a long time, its
+-	 * vruntime difference from min_vruntime may overflow s64 and their
+-	 * comparison may get inversed, so ignore the entity's original
+-	 * vruntime in that case.
+-	 * The maximal vruntime speedup is given by the ratio of normal to
+-	 * minimal weight: scale_load_down(NICE_0_LOAD) / MIN_SHARES.
+-	 * When placing a migrated waking entity, its exec_start has been set
+-	 * from a different rq. In order to take into account a possible
+-	 * divergence between new and prev rq's clocks task because of irq and
+-	 * stolen time, we take an additional margin.
+-	 * So, cutting off on the sleep time of
+-	 *     2^63 / scale_load_down(NICE_0_LOAD) ~ 104 days
+-	 * should be safe.
+-	 */
+-	if (entity_is_long_sleeper(se))
+-		se->vruntime = vruntime;
+-	else
+-		se->vruntime = max_vruntime(se->vruntime, vruntime);
++		load = cfs_rq->avg_load;
++		if (curr && curr->on_rq)
++			load += scale_load_down(curr->load.weight);
++
++		lag *= load + scale_load_down(se->load.weight);
++		if (WARN_ON_ONCE(!load))
++			load = 1;
++		lag = div_s64(lag, load);
++	}
++
++	se->vruntime = vruntime - lag;
++
++	/*
++	 * EEVDF: new tasks start with half a slice for gentler entry.
++	 */
++	if (sched_feat(PLACE_DEADLINE_INITIAL) && initial)
++		vslice /= 2;
++
++	/*
++	 * EEVDF virtual deadline: vd_i = ve_i + r_i / w_i
++	 */
++	se->deadline = se->vruntime + vslice;
++
+ 	trace_android_rvh_place_entity(cfs_rq, se, initial, vruntime);
+ }
+ 
+@@ -4421,8 +4614,10 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ 	 * If we're the current task, we must renormalise before calling
+ 	 * update_curr().
+ 	 */
+-	if (renorm && curr)
++	if (renorm && curr) {
+ 		se->vruntime += cfs_rq->min_vruntime;
++		se->deadline += cfs_rq->min_vruntime;
++	}
+ 
+ 	update_curr(cfs_rq);
+ 
+@@ -4432,8 +4627,10 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ 	 * placed in the past could significantly boost this task to the
+ 	 * fairness detriment of existing tasks.
+ 	 */
+-	if (renorm && !curr)
++	if (renorm && !curr) {
+ 		se->vruntime += cfs_rq->min_vruntime;
++		se->deadline += cfs_rq->min_vruntime;
++	}
+ 
+ 	/*
+ 	 * When enqueuing a sched_entity, we must:
+@@ -4543,6 +4740,15 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ 
+ 	clear_buddies(cfs_rq, se);
+ 
++	/*
++	 * EEVDF: save the entity's lag before removing it from the
++	 * runqueue, so place_entity() can restore it on wakeup.
++	 * Must happen while the entity is still on_rq so
++	 * avg_vruntime() includes it.
++	 */
++	if (flags & DEQUEUE_SLEEP)
++		update_entity_lag(cfs_rq, se);
++
+ 	if (se != cfs_rq->curr)
+ 		__dequeue_entity(cfs_rq, se);
+ 	se->on_rq = 0;
+@@ -4554,8 +4760,10 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ 	 * update_min_vruntime() again, which will discount @se's position and
+ 	 * can move min_vruntime forward still more.
+ 	 */
+-	if (!(flags & DEQUEUE_SLEEP))
++	if (!(flags & DEQUEUE_SLEEP)) {
+ 		se->vruntime -= cfs_rq->min_vruntime;
++		se->deadline -= cfs_rq->min_vruntime;
++	}
+ 
+ 	/* return excess runtime on last dequeue */
+ 	return_cfs_rq_runtime(cfs_rq);
+@@ -4573,48 +4781,51 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+ }
+ 
+ /*
+- * Preempt the current task with a newly woken task if needed:
++ * Preempt the current task with a newly woken task if needed.
++ *
++ * EEVDF: update_deadline() inside update_curr() already handles slice
++ * exhaustion and requests reschedule.  The tick path provides a
++ * minimum-granularity guard and the vendor hook.
+  */
+ static void
+ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
+ {
+ 	unsigned long ideal_runtime, delta_exec;
+-	struct sched_entity *se;
+-	s64 delta;
+ 	bool skip_preempt = false;
+ 
+ 	ideal_runtime = sched_slice(cfs_rq, curr);
+ 	delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
++
+ 	trace_android_rvh_check_preempt_tick(current, &ideal_runtime, &skip_preempt,
+ 			delta_exec, cfs_rq, curr, sysctl_sched_min_granularity);
+ 	if (skip_preempt)
+ 		return;
++
++	/*
++	 * update_deadline() already reschedules when the slice is consumed,
++	 * so the explicit ideal_runtime check is a backstop for vendor hooks
++	 * that alter ideal_runtime.
++	 */
+ 	if (delta_exec > ideal_runtime) {
+ 		resched_curr(rq_of(cfs_rq));
+-		/*
+-		 * The current task ran long enough, ensure it doesn't get
+-		 * re-elected due to buddy favours.
+-		 */
+ 		clear_buddies(cfs_rq, curr);
+ 		return;
+ 	}
+ 
+ 	/*
+-	 * Ensure that a task that missed wakeup preemption by a
+-	 * narrow margin doesn't have to wait for a full slice.
+-	 * This also mitigates buddy induced latencies under load.
++	 * Minimum granularity guard: don't preempt within min_granularity
++	 * of starting to run.
+ 	 */
+ 	if (delta_exec < sysctl_sched_min_granularity)
+ 		return;
+ 
+-	se = __pick_first_entity(cfs_rq);
+-	delta = curr->vruntime - se->vruntime;
+-
+-	if (delta < 0)
+-		return;
+-
+-	if (delta > ideal_runtime)
++	/*
++	 * EEVDF: if the current entity is no longer eligible, preempt.
++	 */
++	if (!entity_eligible(cfs_rq, curr)) {
+ 		resched_curr(rq_of(cfs_rq));
++		clear_buddies(cfs_rq, curr);
++	}
+ }
+ 
+ void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -4647,76 +4858,171 @@ void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	}
+ 
+ 	se->prev_sum_exec_runtime = se->sum_exec_runtime;
++
++	/*
++	 * EEVDF: stash a copy of deadline at the point of pick in vlag,
++	 * which isn't used until dequeue.  RUN_TO_PARITY checks
++	 * vlag == deadline to detect "deadline hasn't changed since pick",
++	 * meaning the entity hasn't exhausted its slice yet.
++	 */
++	se->vlag = se->deadline;
+ }
+ EXPORT_SYMBOL_GPL(set_next_entity);
+ 
+ 
+-static int
+-wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se);
+-
+ /*
+- * Pick the next process, keeping these things in mind, in this order:
+- * 1) keep things fair between processes/task groups
+- * 2) pick the "next" process, since someone really wants that to run
+- * 3) pick the "last" process, for cache locality
+- * 4) do not run the "skip" process, if something else is available
++ * EEVDF: find the eligible entity with the earliest virtual deadline.
++ *
++ * Two-phase search on the vruntime-ordered, min_deadline-augmented rbtree:
++ *   Phase 1: walk down looking for eligible nodes, tracking the best
++ *            deadline and the best left-branch min_deadline.
++ *   Phase 2: once in a fully-eligible subtree, chase min_deadline to
++ *            find the actual node.
+  */
+-static struct sched_entity *
+-pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
++static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
+ {
+-	struct sched_entity *left = __pick_first_entity(cfs_rq);
+-	struct sched_entity *se = NULL;
++	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
++	struct sched_entity *curr = cfs_rq->curr;
++	struct sched_entity *best = NULL;
++	struct sched_entity *best_left = NULL;
+ 
+-	trace_android_rvh_pick_next_entity(cfs_rq, curr, &se);
+-	if (se)
+-		goto done;
++	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
++		curr = NULL;
++	best = curr;
+ 
+ 	/*
+-	 * If curr is set we have to see if its left of the leftmost entity
+-	 * still in the tree, provided there was anything in the tree at all.
++	 * RUN_TO_PARITY: if we picked curr last time and its deadline
++	 * hasn't been refreshed (vlag still == deadline from set_next_entity),
++	 * let it keep running — it hasn't exhausted its slice.
+ 	 */
+-	if (!left || (curr && entity_before(curr, left)))
+-		left = curr;
++	if (sched_feat(RUN_TO_PARITY) && curr &&
++	    curr->vlag == curr->deadline)
++		return curr;
++
++	while (node) {
++		struct sched_entity *se = __node_2_se(node);
++
++		/*
++		 * If this entity is not eligible, everything in its right
++		 * subtree has higher vruntime and is also ineligible.
++		 * Try left (lower vruntime).
++		 */
++		if (!entity_eligible(cfs_rq, se)) {
++			node = node->rb_left;
++			continue;
++		}
++
++		/* This node is eligible — track best deadline seen. */
++		if (!best || deadline_gt(deadline, best, se))
++			best = se;
++
++		/* Track best left branch by min_deadline. */
++		if (node->rb_left) {
++			struct sched_entity *left = __node_2_se(node->rb_left);
+ 
+-	se = left; /* ideally we run the leftmost entity */
++			if (!best_left ||
++			    deadline_gt(min_deadline, best_left, left))
++				best_left = left;
++
++			/*
++			 * If the left child's min_deadline equals this
++			 * node's, the earliest-deadline entity is in the
++			 * left subtree where all nodes are eligible (lower
++			 * vruntime than an eligible parent). Switch to
++			 * phase 2.
++			 */
++			if (left->min_deadline == se->min_deadline)
++				break;
++		}
++
++		/* min_deadline is at this node itself. */
++		if (se->deadline == se->min_deadline)
++			break;
++
++		/* min_deadline is in the right subtree. */
++		node = node->rb_right;
++	}
+ 
+ 	/*
+-	 * Avoid running the skip buddy, if running something else can
+-	 * be done without getting too unfair.
++	 * Phase 1 done: if no left subtree has a better deadline than
++	 * what we already found, return best.
+ 	 */
+-	if (cfs_rq->skip == se) {
+-		struct sched_entity *second;
++	if (!best_left ||
++	    (s64)(best_left->min_deadline - best->deadline) > 0)
++		return best;
+ 
+-		if (se == curr) {
+-			second = __pick_first_entity(cfs_rq);
+-		} else {
+-			second = __pick_next_entity(se);
+-			if (!second || (curr && entity_before(curr, second)))
+-				second = curr;
++	/*
++	 * Phase 2: best_left's subtree is fully eligible. Chase
++	 * min_deadline down to find the actual node.
++	 */
++	node = &best_left->run_node;
++	while (node) {
++		struct sched_entity *se = __node_2_se(node);
++
++		if (se->deadline == se->min_deadline)
++			return se;
++
++		if (node->rb_left &&
++		    __node_2_se(node->rb_left)->min_deadline ==
++		    se->min_deadline) {
++			node = node->rb_left;
++			continue;
+ 		}
+ 
+-		if (second && wakeup_preempt_entity(second, left) < 1)
+-			se = second;
++		node = node->rb_right;
+ 	}
+ 
+-	if (cfs_rq->next && wakeup_preempt_entity(cfs_rq->next, left) < 1) {
+-		/*
+-		 * Someone really wants this to run. If it's not unfair, run it.
+-		 */
+-		se = cfs_rq->next;
+-	} else if (cfs_rq->last && wakeup_preempt_entity(cfs_rq->last, left) < 1) {
+-		/*
+-		 * Prefer last buddy, try to return the CPU to a preempted task.
+-		 */
+-		se = cfs_rq->last;
+-	}
++	return NULL;
++}
+ 
+-done:
+-	clear_buddies(cfs_rq, se);
++static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
++{
++	struct sched_entity *se = __pick_eevdf(cfs_rq);
++
++	if (!se) {
++		struct sched_entity *left = __pick_first_entity(cfs_rq);
++		if (left) {
++			struct sched_entity *c = cfs_rq->curr;
++
++			pr_warn_ratelimited("EEVDF: pick fail nr=%u avg_vrt=%lld avg_ld=%ld min_vrt=%llu left_vrt=%llu left_dl=%llu left_eligible=%d curr_on_rq=%d\n",
++				cfs_rq->nr_running,
++				cfs_rq->avg_vruntime,
++				cfs_rq->avg_load,
++				cfs_rq->min_vruntime,
++				left->vruntime,
++				left->deadline,
++				entity_eligible(cfs_rq, left),
++				c ? c->on_rq : -1);
++			return left;
++		}
++	}
+ 
+ 	return se;
+ }
+ 
++/*
++ * Pick the next process — EEVDF replaces the old CFS buddy-based picker.
++ * The vendor hook is preserved so OEM modules still work.
++ */
++static struct sched_entity *
++pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
++{
++	struct sched_entity *se = NULL;
++
++	trace_android_rvh_pick_next_entity(cfs_rq, curr, &se);
++	if (se)
++		return se;
++
++	/*
++	 * Allow NEXT_BUDDY hint if the entity is eligible.
++	 */
++	if (sched_feat(NEXT_BUDDY) &&
++	    cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next))
++		return cfs_rq->next;
++
++	return pick_eevdf(cfs_rq);
++}
++
+ static bool check_cfs_rq_runtime(struct cfs_rq *cfs_rq);
+ 
+ static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
+@@ -7129,6 +7435,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
+ #endif
+ 
+ 		se->vruntime -= min_vruntime;
++		se->deadline -= min_vruntime;
+ 	}
+ 
+ 	if (p->on_rq == TASK_ON_RQ_MIGRATING) {
+@@ -7172,55 +7479,6 @@ balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ }
+ #endif /* CONFIG_SMP */
+ 
+-static unsigned long wakeup_gran(struct sched_entity *se)
+-{
+-	unsigned long gran = sysctl_sched_wakeup_granularity;
+-
+-	/*
+-	 * Since its curr running now, convert the gran from real-time
+-	 * to virtual-time in his units.
+-	 *
+-	 * By using 'se' instead of 'curr' we penalize light tasks, so
+-	 * they get preempted easier. That is, if 'se' < 'curr' then
+-	 * the resulting gran will be larger, therefore penalizing the
+-	 * lighter, if otoh 'se' > 'curr' then the resulting gran will
+-	 * be smaller, again penalizing the lighter task.
+-	 *
+-	 * This is especially important for buddies when the leftmost
+-	 * task is higher priority than the buddy.
+-	 */
+-	return calc_delta_fair(gran, se);
+-}
+-
+-/*
+- * Should 'se' preempt 'curr'.
+- *
+- *             |s1
+- *        |s2
+- *   |s3
+- *         g
+- *      |<--->|c
+- *
+- *  w(c, s1) = -1
+- *  w(c, s2) =  0
+- *  w(c, s3) =  1
+- *
+- */
+-static int
+-wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se)
+-{
+-	s64 gran, vdiff = curr->vruntime - se->vruntime;
+-
+-	if (vdiff <= 0)
+-		return -1;
+-
+-	gran = wakeup_gran(se);
+-	if (vdiff > gran)
+-		return 1;
+-
+-	return 0;
+-}
+-
+ static void set_last_buddy(struct sched_entity *se)
+ {
+ 	if (entity_is_task(se) && unlikely(task_has_idle_policy(task_of(se))))
+@@ -7283,12 +7541,6 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
+ 	/*
+ 	 * We can come here with TIF_NEED_RESCHED already set from new task
+ 	 * wake up path.
+-	 *
+-	 * Note: this also catches the edge-case of curr being in a throttled
+-	 * group (e.g. via set_curr_task), since update_curr() (in the
+-	 * enqueue of curr) will have resulted in resched being set.  This
+-	 * prevents us from potentially nominating it as a false LAST_BUDDY
+-	 * below.
+ 	 */
+ 	if (test_tsk_need_resched(curr))
+ 		return;
+@@ -7314,11 +7566,42 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
+ 	if (nopreempt)
+ 		return;
+ 	BUG_ON(!pse);
+-	if (wakeup_preempt_entity(se, pse) == 1) {
+-		/*
+-		 * Bias pick_next to pick the sched entity that is
+-		 * triggering this preemption.
+-		 */
++
++	/*
++	 * EEVDF wakeup preemption — two paths:
++	 *
++	 * 1. Deadline wins: the wakee has an earlier virtual deadline than
++	 *    the current entity → preempt unconditionally.  On mobile the
++	 *    latency-sensitive path (UI thread waking after vsync,
++	 *    RenderThread after GPU fence) must preempt immediately —
++	 *    waiting for curr to become ineligible adds up to a full slice
++	 *    of tail latency, which surfaces as UI jank on MediaTek and
++	 *    other SoCs with wide cluster capacity spreads.
++	 *
++	 * 2. Vruntime sleeper assist: the deadline comparison can lose when
++	 *    curr just refreshed its deadline (crosses the old one → gets a
++	 *    new vslice pushed far out), making both deadlines roughly
++	 *    equal.  In that case a sleeping task that has accumulated a
++	 *    vruntime deficit (lower vruntime than curr) should still
++	 *    preempt — it is owed CPU time and is eligible to run.  This
++	 *    restores CFS-like sleeper-preempts-runner behaviour without
++	 *    abandoning EEVDF entirely, and closes the latency gap on ROMs
++	 *    that register no vendor check_preempt_wakeup hook (AOSP,
++	 *    LineageOS, PixelExperience) where the frame pipeline has no
++	 *    vendor module to force-preempt for top-app tasks.
++	 *
++	 *    Guard: only when the wakee is eligible (behind V), and the
++	 *    vruntime gap exceeds wakeup_granularity to avoid ping-pong
++	 *    between two tasks with near-equal vruntimes.
++	 */
++	if ((s64)(pse->deadline - se->deadline) < 0) {
++		if (!next_buddy_marked)
++			set_next_buddy(pse);
++		goto preempt;
++	}
++
++	if (entity_eligible(cfs_rq_of(pse), pse) &&
++	    (s64)(se->vruntime - pse->vruntime) > (s64)sysctl_sched_wakeup_granularity) {
+ 		if (!next_buddy_marked)
+ 			set_next_buddy(pse);
+ 		goto preempt;
+@@ -11147,10 +11430,12 @@ static void task_fork_fair(struct task_struct *p)
+ 		 * 'current' within the tree based on its new key value.
+ 		 */
+ 		swap(curr->vruntime, se->vruntime);
++		swap(curr->deadline, se->deadline);
+ 		resched_curr(rq);
+ 	}
+ 
+ 	se->vruntime -= cfs_rq->min_vruntime;
++	se->deadline -= cfs_rq->min_vruntime;
+ 	rq_unlock(rq, &rf);
+ }
+ 
+@@ -11280,6 +11565,7 @@ static void detach_task_cfs_rq(struct task_struct *p)
+ 		 */
+ 		place_entity(cfs_rq, se, 0);
+ 		se->vruntime -= cfs_rq->min_vruntime;
++		se->deadline -= cfs_rq->min_vruntime;
+ 	}
+ 
+ 	detach_entity_cfs_rq(se);
+@@ -11292,8 +11578,10 @@ static void attach_task_cfs_rq(struct task_struct *p)
+ 
+ 	attach_entity_cfs_rq(se);
+ 
+-	if (!vruntime_normalized(p))
++	if (!vruntime_normalized(p)) {
+ 		se->vruntime += cfs_rq->min_vruntime;
++		se->deadline += cfs_rq->min_vruntime;
++	}
+ }
+ 
+ static void switched_from_fair(struct rq *rq, struct task_struct *p)
+@@ -11350,6 +11638,8 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
+ {
+ 	cfs_rq->tasks_timeline = RB_ROOT_CACHED;
+ 	cfs_rq->min_vruntime = (u64)(-(1LL << 20));
++	cfs_rq->avg_vruntime = 0;
++	cfs_rq->avg_load = 0;
+ #ifndef CONFIG_64BIT
+ 	cfs_rq->min_vruntime_copy = cfs_rq->min_vruntime;
+ #endif
+@@ -11700,7 +11990,58 @@ __init void init_sched_fair_class(void)
+ #endif
+ #endif /* SMP */
+ 
++	pr_info("EEVDF scheduler initialized (backport from Linux 6.6)\n");
++}
++
++/*
++ * /proc/sched_eevdf — read-only status for EEVDF backport.
++ * Always present regardless of CONFIG_SCHED_BORE so users can verify
++ * the EEVDF scheduler is active on any build variant.
++ */
++static int sched_eevdf_show(struct seq_file *m, void *v)
++{
++	seq_puts(m, "EEVDF (Earliest Eligible Virtual Deadline First)\n");
++	seq_puts(m, "Backport: Linux 6.6 -> GKI 5.10\n");
++	seq_printf(m, "PLACE_LAG:              %s\n",
++		   sched_feat(PLACE_LAG) ? "enabled" : "disabled");
++	seq_printf(m, "PLACE_DEADLINE_INITIAL: %s\n",
++		   sched_feat(PLACE_DEADLINE_INITIAL) ? "enabled" : "disabled");
++	seq_printf(m, "RUN_TO_PARITY:          %s\n",
++		   sched_feat(RUN_TO_PARITY) ? "enabled" : "disabled");
++	seq_printf(m, "sched_latency:          %u ms\n",
++		   sysctl_sched_latency / 1000000U);
++	seq_printf(m, "min_granularity:        %u ms\n",
++		   sysctl_sched_min_granularity / 1000000U);
++	seq_printf(m, "wakeup_granularity:     %u ms\n",
++		   sysctl_sched_wakeup_granularity / 1000000U);
++	seq_printf(m, "sched_nr_latency:       %u\n",
++		   sched_nr_latency);
++#ifdef CONFIG_SCHED_BORE
++	seq_puts(m, "BORE:                   active\n");
++#else
++	seq_puts(m, "BORE:                   not configured\n");
++#endif
++	return 0;
++}
++
++static int sched_eevdf_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, sched_eevdf_show, NULL);
++}
++
++static const struct proc_ops sched_eevdf_proc_ops = {
++	.proc_open    = sched_eevdf_open,
++	.proc_read    = seq_read,
++	.proc_lseek   = seq_lseek,
++	.proc_release = single_release,
++};
++
++static int __init sched_eevdf_proc_init(void)
++{
++	proc_create("sched_eevdf", 0444, NULL, &sched_eevdf_proc_ops);
++	return 0;
+ }
++late_initcall(sched_eevdf_proc_init);
+ 
+ /*
+  * Helper functions to facilitate extracting info from tracepoints.
+diff --git a/kernel/sched/fair.c.rej b/kernel/sched/fair.c.rej
+new file mode 100644
+index 000000000..60865ff09
+--- /dev/null
++++ b/kernel/sched/fair.c.rej
+@@ -0,0 +1,20 @@
++diff a/kernel/sched/fair.c b/kernel/sched/fair.c	(rejected hunks)
++@@ -1040,7 +1210,8 @@ static void update_curr(struct cfs_rq *cfs_rq)
++     update_burst_penalty(curr);
++ #endif // CONFIG_SCHED_BORE
++ 
++-    update_min_vruntime(cfs_rq);
+++	update_deadline(cfs_rq, curr);
+++	update_min_vruntime(cfs_rq);
++ 
++     if (entity_is_task(curr)) {
++         struct task_struct *curtask = task_of(curr);
++@@ -11312,6 +11596,8 @@ static void task_fork_fair(struct task_struct *p)
++ 		update_curr(cfs_rq);
++ 		se->vruntime = curr->vruntime;
++ 	}
+++	/* EEVDF: new task starts with zero lag. */
+++	se->vlag = 0;
++ #ifdef CONFIG_SCHED_BORE
++ 	update_burst_score(se);
++ #endif // CONFIG_SCHED_BORE
+diff --git a/kernel/sched/features.h b/kernel/sched/features.h
+index 5861e2628..833ada12c 100644
+--- a/kernel/sched/features.h
++++ b/kernel/sched/features.h
+@@ -1,16 +1,44 @@
+ /* SPDX-License-Identifier: GPL-2.0 */
+ /*
+- * Only give sleepers 50% of their service deficit. This allows
+- * them to run sooner, but does not allow tons of sleepers to
+- * rip the spread apart.
++ * Legacy CFS sleeper credit — superseded by EEVDF's PLACE_LAG which
++ * preserves the full fairness lag across sleep, not just 50%.
++ * Kept false; no code reads it when EEVDF is active.
+  */
+-SCHED_FEAT(GENTLE_FAIR_SLEEPERS, true)
++SCHED_FEAT(GENTLE_FAIR_SLEEPERS, false)
+ 
+ /*
+- * Place new tasks ahead so that they do not starve already running
+- * tasks
++ * Legacy CFS initial placement debit — superseded by EEVDF's
++ * PLACE_DEADLINE_INITIAL which gives new tasks half a virtual slice.
++ * Kept false; no code reads it when EEVDF is active.
+  */
+-SCHED_FEAT(START_DEBIT, true)
++SCHED_FEAT(START_DEBIT, false)
++
++/*
++ * EEVDF: Preserve lag across sleeps — entity wakes with the same
++ * fairness debt/credit it had when it went to sleep.
++ */
++SCHED_FEAT(PLACE_LAG, true)
++
++/*
++ * EEVDF: Give newly forked/execed tasks only half a slice worth of
++ * deadline, so they do not immediately preempt long-running tasks.
++ */
++SCHED_FEAT(PLACE_DEADLINE_INITIAL, true)
++
++/*
++ * EEVDF: Let the current task keep running at tick time if it hasn't
++ * exhausted its slice yet — __pick_eevdf() returns curr immediately
++ * instead of doing an O(log n) tree walk, saving ~50 cycles per tick
++ * on lightly loaded cores.
++ *
++ * This does NOT block wakeup preemption: check_preempt_wakeup() fires
++ * before pick_next_entity() and grants preemption via deadline
++ * comparison + vruntime sleeper assist.  RUN_TO_PARITY only skips the
++ * tick-driven re-evaluation, which matters for CPU-bound background
++ * tasks — exactly the workload where fewer context switches save power
++ * without affecting UI latency.
++ */
++SCHED_FEAT(RUN_TO_PARITY, true)
+ 
+ /*
+  * Prefer to schedule the task we woke last (assuming it failed
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 88696e04a..cba12c83d 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -617,6 +617,10 @@ struct cfs_rq {
+ 
+ 	ANDROID_VENDOR_DATA_ARRAY(1, 16);
+ #endif /* CONFIG_FAIR_GROUP_SCHED */
++
++	/* EEVDF fields — appended at end to preserve KMI/ABI layout */
++	s64			avg_vruntime;
++	long			avg_load;
+ };
+ 
+ static inline int rt_bandwidth_enabled(void)
