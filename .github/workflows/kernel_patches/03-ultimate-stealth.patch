@@ -43,33 +43,34 @@ index a8e2fa51a37c..fc7dbe7cf823 100644
  
  static int cmdline_proc_show(struct seq_file *m, void *v)
  {
- 	char *copy = kstrdup(saved_command_line, GFP_KERNEL);
- 	char *ptr;
- 
- 	if (copy) {
- 		if ((ptr = strstr(copy, "androidboot.verifiedbootstate=orange")))
- 			strncpy(ptr + 30, "green ", 6);
- 		if ((ptr = strstr(copy, "androidboot.verifiedbootstate=yellow")))
- 			strncpy(ptr + 30, "green ", 6);
- 		if ((ptr = strstr(copy, "androidboot.vbmeta.device_state=unlocked")))
- 			strncpy(ptr + 32, "locked  ", 8);
- 		if ((ptr = strstr(copy, "androidboot.flash.locked=0")))
- 			strncpy(ptr + 25, "1", 1);
- 		if ((ptr = strstr(copy, "androidboot.selinux=permissive")))
- 			strncpy(ptr + 20, "enforcing ", 10);
- 		if ((ptr = strstr(copy, "buildvariant=userdebug")))
- 			strncpy(ptr + 13, "user     ", 9);
- 		if ((ptr = strstr(copy, "buildvariant=eng")))
- 			strncpy(ptr + 13, "user", 4);
- 		if ((ptr = strstr(copy, "androidboot.mode=custom")))
- 			strncpy(ptr + 17, "normal", 6);
- 
- 		seq_puts(m, copy);
- 		kfree(copy);
- 	} else {
- 		seq_puts(m, saved_command_line);
- 	}
- 
+-	seq_puts(m, saved_command_line);
++	char *copy = kstrdup(saved_command_line, GFP_KERNEL);
++	char *ptr;
++
++	if (copy) {
++		if ((ptr = strstr(copy, "androidboot.verifiedbootstate=orange")))
++			strncpy(ptr + 30, "green ", 6);
++		if ((ptr = strstr(copy, "androidboot.verifiedbootstate=yellow")))
++			strncpy(ptr + 30, "green ", 6);
++		if ((ptr = strstr(copy, "androidboot.vbmeta.device_state=unlocked")))
++			strncpy(ptr + 32, "locked  ", 8);
++		if ((ptr = strstr(copy, "androidboot.flash.locked=0")))
++			strncpy(ptr + 25, "1", 1);
++		if ((ptr = strstr(copy, "androidboot.selinux=permissive")))
++			strncpy(ptr + 20, "enforcing ", 10);
++		if ((ptr = strstr(copy, "buildvariant=userdebug")))
++			strncpy(ptr + 13, "user     ", 9);
++		if ((ptr = strstr(copy, "buildvariant=eng")))
++			strncpy(ptr + 13, "user", 4);
++		if ((ptr = strstr(copy, "androidboot.mode=custom")))
++			strncpy(ptr + 17, "normal", 6);
++
++		seq_puts(m, copy);
++		kfree(copy);
++	} else {
++		seq_puts(m, saved_command_line);
++	}
++
  	seq_putc(m, '\n');
  	return 0;
  }
