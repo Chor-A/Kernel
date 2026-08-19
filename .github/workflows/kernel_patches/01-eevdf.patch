@@ -10,10 +10,10 @@ Signed-off-by: Steambot12 <wilfridus.it@gmail.com>
 ---
  include/linux/sched.h   |   6 +
  kernel/sched/core.c     |   4 +
- kernel/sched/fair.c     | 728 ++++++++++++++++++++++++++++++----------
- kernel/sched/features.h |  42 ++-
+ kernel/sched/fair.c     | 734 +++++++++++++++++++++++++++++-----------
+ kernel/sched/features.h |   7 +-
  kernel/sched/sched.h    |   4 +
- 5 files changed, 584 insertions(+), 200 deletions(-)
+ 5 files changed, 553 insertions(+), 160 deletions(-)
 
 diff --git a/include/linux/sched.h b/include/linux/sched.h
 index 82db6a71cf8d..cd85efcc7b9d 100644
@@ -190,10 +190,6 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	smp_wmb();
  	cfs_rq->min_vruntime_copy = cfs_rq->min_vruntime;
  #endif
- }
- 
- /*
-@@ -730,7 +826,45 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
  }
  
  /*
@@ -425,8 +421,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 + * To preserve original lag after insertion, inflate:
 + *   vl_i = (W + w_i) * vl'_i / W
 + */
- static void
- place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
+ static void place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
  {
 -	u64 vruntime = cfs_rq->min_vruntime;
 +	u64 vslice, vruntime = avg_vruntime(cfs_rq);
@@ -593,11 +588,11 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	if (skip_preempt)
  		return;
 +
- 	/*
- 	 * update_deadline() already reschedules when the slice is consumed,
- 	 * so the explicit ideal_runtime check is a backstop for vendor hooks
- 	 * that alter ideal_runtime.
- 	 */
++	/*
++	 * update_deadline() already reschedules when the slice is consumed,
++	 * so the explicit ideal_runtime check is a backstop for vendor hooks
++	 * that alter ideal_runtime.
++	 */
  	if (delta_exec > ideal_runtime) {
  		resched_curr(rq_of(cfs_rq));
 -		/*
@@ -824,8 +819,8 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +			return left;
 +		}
 +	}
-+
-+	return se;
+ 
+ 	return se;
  }
  
 +/*
@@ -1093,58 +1088,27 @@ diff --git a/kernel/sched/features.h b/kernel/sched/features.h
 index 5861e2628367..833ada12c8f8 100644
 --- a/kernel/sched/features.h
 +++ b/kernel/sched/features.h
-@@ -1,16 +1,44 @@
- /* SPDX-License-Identifier: GPL-2.0 */
- /*
-- * Only give sleepers 50% of their service deficit. This allows
-- * them to run sooner, but does not allow tons of sleepers to
-- * rip the spread apart.
-+ * Legacy CFS sleeper credit — superseded by EEVDF's PLACE_LAG which
-+ * preserves the full fairness lag across sleep, not just 50%.
-+ * Kept false; no code reads it when EEVDF is active.
+@@ -6,15 +6,18 @@
   */
 -SCHED_FEAT(GENTLE_FAIR_SLEEPERS, true)
 +SCHED_FEAT(GENTLE_FAIR_SLEEPERS, false)
  
  /*
-- * Place new tasks ahead so that they do not starve already running
-- * tasks
-+ * Legacy CFS initial placement debit — superseded by EEVDF's
-+ * PLACE_DEADLINE_INITIAL which gives new tasks half a virtual slice.
-+ * Kept false; no code reads it when EEVDF is active.
+  * Place new tasks ahead so that they do not starve already running
+  * tasks
   */
 -SCHED_FEAT(START_DEBIT, true)
 +SCHED_FEAT(START_DEBIT, false)
-+
-+/*
-+ * EEVDF: Preserve lag across sleeps — entity wakes with the same
-+ * fairness debt/credit it had when it went to sleep.
-  */
 +SCHED_FEAT(PLACE_LAG, true)
-+
-+/*
-+ * EEVDF: Give newly forked/execed tasks only half a slice worth of
-+ * deadline, so they do not immediately preempt long-running tasks.
-+ */
 +SCHED_FEAT(PLACE_DEADLINE_INITIAL, true)
-+
-+/*
-+ * EEVDF: Let the current task keep running at tick time if it hasn't
-+ * exhausted its slice yet — __pick_eevdf() returns curr immediately
-+ * instead of doing an O(log n) tree walk, saving ~50 cycles per tick
-+ * on lightly loaded cores.
-+ *
-+ * This does NOT block wakeup preemption: check_preempt_wakeup() fires
-+ * before pick_next_entity() and grants preemption via deadline
-+ * comparison + vruntime sleeper assist.  RUN_TO_PARITY only skips the
-+ * tick-driven re-evaluation, which matters for CPU-bound background
-+ * tasks — exactly the workload where fewer context switches save power
-+ * without affecting UI latency.
-+ */
 +SCHED_FEAT(RUN_TO_PARITY, true)
  
  /*
   * Prefer to schedule the task we woke last (assuming it failed
+  * wakeup-preemption), since its likely going to consume data we
+  * touched, increases cache locality.
+  */
+ SCHED_FEAT(NEXT_BUDDY, false)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
 index 69991be85e0d..bcabdaffa1d8 100644
 --- a/kernel/sched/sched.h
