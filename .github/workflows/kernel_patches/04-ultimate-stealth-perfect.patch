@@ -6,52 +6,23 @@ index f5da74234..73211bc28 100644
  	task_unlock(p);
  	rcu_read_unlock();
  
-+       if (current_uid().val >= 10000)
-+               tpid = 0;
++	if (current_uid().val >= 10000)
++		tpid = 0;
 +
  	if (umask >= 0)
  		seq_printf(m, "Umask:\t%#04o\n", umask);
  	seq_puts(m, "State:\t");
-@@ -285,6 +288,9 @@ static inline void task_sig(struct seq_file *m, struct task_struct *p)
- 		rcu_read_lock();  /* FIXME: is this correct? */
- 		qsize = atomic_read(&__task_cred(p)->user->sigpending);
- 		rcu_read_unlock();
-+
-+       if (current_uid().val >= 10000)
-+               tpid = 0;
- 		qlim = task_rlimit(p, RLIMIT_SIGPENDING);
- 		unlock_task_sighand(p, &flags);
- 	}
-@@ -329,6 +335,9 @@ static inline void task_cap(struct seq_file *m, struct task_struct *p)
- 	cap_ambient	= cred->cap_ambient;
- 	rcu_read_unlock();
- 
-+       if (current_uid().val >= 10000)
-+               tpid = 0;
-+
- 	render_cap_t(m, "CapInh:\t", &cap_inheritable);
- 	render_cap_t(m, "CapPrm:\t", &cap_permitted);
- 	render_cap_t(m, "CapEff:\t", &cap_effective);
-@@ -531,6 +540,9 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
- 			}
- 			rcu_read_unlock();
- 
-+       if (current_uid().val >= 10000)
-+               tpid = 0;
-+
- 			thread_group_cputime_adjusted(task, &utime, &stime);
- 		}
- 	} while (need_seqretry(&sig->stats_lock, seq));
 diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
 index 126d4433d..a875f954e 100644
 --- a/kernel/kallsyms.c
 +++ b/kernel/kallsyms.c
-@@ -745,6 +745,8 @@ bool kallsyms_show_value(const struct cred *cred)
- 
- static int kallsyms_open(struct inode *inode, struct file *file)
+@@ -747,6 +747,9 @@ static int kallsyms_open(struct inode *inode, struct file *file)
  {
-+       if (current_uid().val >= 10000)
-+               return -ENOENT;
+ 	struct kallsym_iter *iter;
+ 
++	if (current_uid().val >= 10000)
++		return -ENOENT;
++
  	/*
  	 * We keep iterator in m->private, since normal case is to
  	 * s_start from where we left off, so we avoid doing
@@ -63,7 +34,7 @@ index 842936656..69ce39c47 100755
  {
  	local short
  	short=false
-+       return
++	return
  
  	cd "$srctree"
  	if test -e .scmversion; then
