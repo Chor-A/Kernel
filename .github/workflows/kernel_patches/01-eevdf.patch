@@ -2,26 +2,21 @@ From 8c0ad4c425180a8854f2538bae529bf965d472ee Mon Sep 17 00:00:00 2001
 From: Steambot12 <wilfridus.it@gmail.com>
 Date: Sat, 15 Aug 2026 03:56:07 +0000
 Subject: [PATCH] [BACKPORT] sched/fair: backport EEVDF scheduler from Linux 6.6
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 Backport the Earliest Eligible Virtual Deadline First (EEVDF) scheduling
-algorithm from upstream Linux 6.6 to GKI 5.10.  EEVDF replaces the CFS
-buddy-based task picker with a deadline-driven, eligibility-aware picker
-that provides better latency guarantees and provably fair CPU distribution.
+algorithm from upstream Linux 6.6 to GKI 5.10.
 
 Signed-off-by: Steambot12 <wilfridus.it@gmail.com>
 ---
  include/linux/sched.h   |   6 +
  kernel/sched/core.c     |   4 +
- kernel/sched/fair.c     | 734 +++++++++++++++++++++++++++++-----------
+ kernel/sched/fair.c     | 728 ++++++++++++++++++++++++++++++----------
  kernel/sched/features.h |  42 ++-
  kernel/sched/sched.h    |   4 +
- 5 files changed, 588 insertions(+), 202 deletions(-)
+ 5 files changed, 584 insertions(+), 200 deletions(-)
 
 diff --git a/include/linux/sched.h b/include/linux/sched.h
-index 82db6a71cf8d..8d22939f717c 100644
+index 82db6a71cf8d..cd85efcc7b9d 100644
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
 @@ -512,6 +512,12 @@ struct sched_entity {
@@ -64,7 +59,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  #include <trace/hooks/sched.h>
  
  EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
-@@ -697,12 +698,103 @@ static inline int entity_before(struct sched_entity *a,
+@@ -697,34 +698,129 @@ static inline int entity_before(struct sched_entity *a,
  	return (s64)(a->vruntime - b->vruntime) < 0;
  }
  
@@ -103,7 +98,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +	cfs_rq->avg_load -= weight;
 +}
 +
- static inline
++static inline
 +void avg_vruntime_update(struct cfs_rq *cfs_rq, s64 delta)
 +{
 +	/*
@@ -169,7 +164,19 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  
  	if (curr) {
  		if (curr->on_rq)
-@@ -722,7 +814,11 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
+ 			vruntime = curr->vruntime;
+ 		else
+ 			curr = NULL;
+ 	}
+ 
+ 	if (leftmost) { /* non-empty tree */
+ 		struct sched_entity *se;
+ 		se = rb_entry(leftmost, struct sched_entity, run_node);
+ 
+ 		if (!curr)
+ 			vruntime = se->vruntime;
+ 		else
+ 			vruntime = min_vruntime(vruntime, se->vruntime);
  	}
  
  	/* ensure we never gain time by being placed backwards. */
@@ -182,6 +189,10 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  #ifndef CONFIG_64BIT
  	smp_wmb();
  	cfs_rq->min_vruntime_copy = cfs_rq->min_vruntime;
+ #endif
+ }
+ 
+ /*
 @@ -730,7 +826,45 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
  }
  
@@ -491,7 +502,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +
 +	/*
 +	 * EEVDF: new tasks start with half a slice for gentler entry.
- 	 */
++	 */
 +	if (sched_feat(PLACE_DEADLINE_INITIAL) && initial)
 +		vslice /= 2;
 +
@@ -582,11 +593,11 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	if (skip_preempt)
  		return;
 +
-+	/*
-+	 * update_deadline() already reschedules when the slice is consumed,
-+	 * so the explicit ideal_runtime check is a backstop for vendor hooks
-+	 * that alter ideal_runtime.
-+	 */
+ 	/*
+ 	 * update_deadline() already reschedules when the slice is consumed,
+ 	 * so the explicit ideal_runtime check is a backstop for vendor hooks
+ 	 * that alter ideal_runtime.
+ 	 */
  	if (delta_exec > ideal_runtime) {
  		resched_curr(rq_of(cfs_rq));
 -		/*
@@ -1108,7 +1119,7 @@ index 5861e2628367..833ada12c8f8 100644
 +/*
 + * EEVDF: Preserve lag across sleeps — entity wakes with the same
 + * fairness debt/credit it had when it went to sleep.
-+ */
+  */
 +SCHED_FEAT(PLACE_LAG, true)
 +
 +/*
