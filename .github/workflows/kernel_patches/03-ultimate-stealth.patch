@@ -1,39 +1,39 @@
 From ad58fa8f903823485ba3c604be1b2c45ab837d38 Mon Sep 17 00:00:00 2001
 From: Stealth Developer <stealth@localhost>
 Date: Wed, 19 Aug 2026 12:00:00 +0000
-Subject: [PATCH] core: all-in-one stealth and custom rom spoofing
+Subject: [PATCH] core: all-in-one stealth, custom rom, and kallsyms spoofing
 
 1. fs/proc/cmdline.c: Spoofs verifiedbootstate, device_state, selinux, and userdebug.
-2. fs/proc/array.c: Hardcodes TracerPid to 0 for non-root users to defeat Anti-Cheats.
-3. scripts/setlocalversion: Immediately returns empty to prevent '-dirty' append.
+2. fs/proc/array.c: Hardcodes TracerPid to 0 for non-root users.
+3. kernel/kallsyms.c: Blocks /proc/kallsyms access for non-root user apps.
+4. scripts/setlocalversion: Prevents appending '-dirty' to kernel name.
 
 Signed-off-by: Stealth Developer <stealth@localhost>
 ---
  fs/proc/array.c         |  4 ++++
  fs/proc/cmdline.c       | 30 +++++++++++++++++++++++++++++-
+ kernel/kallsyms.c       |  4 ++++
  scripts/setlocalversion |  1 +
- 3 files changed, 34 insertions(+), 1 deletion(-)
+ 4 files changed, 39 insertions(+), 1 deletion(-)
 
 diff --git a/fs/proc/array.c b/fs/proc/array.c
 index a879cf1b9cf2..3eb492f2fcde 100644
 --- a/fs/proc/array.c
 +++ b/fs/proc/array.c
-@@ -213,6 +213,10 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
- 	if (unlikely(tracer) && p->ptrace) {
- 		tpid = task_pid_nr_ns(tracer, ns);
+@@ -200,5 +200,9 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
+ 		tracer = ptrace_parent(p);
+ 		if (tracer)
+ 			tpid = task_pid_nr_ns(tracer, ns);
++
++		if (current_uid().val >= 10000)
++			tpid = 0;
  	}
-+
-+	if (current_uid().val >= 10000)
-+		tpid = 0;
-+
  	rcu_read_unlock();
- 
- 	task_lock(p);
 diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
 index a8e2fa51a37c..fc7dbe7cf823 100644
 --- a/fs/proc/cmdline.c
 +++ b/fs/proc/cmdline.c
-@@ -2,11 +2,40 @@
+@@ -2,11 +2,38 @@
  #include <linux/fs.h>
  #include <linux/init.h>
  #include <linux/proc_fs.h>
@@ -74,6 +74,20 @@ index a8e2fa51a37c..fc7dbe7cf823 100644
  	seq_putc(m, '\n');
  	return 0;
  }
+diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
+index 69e96e5eb981..4a72d7331bdc 100644
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -887,6 +887,10 @@ static inline int kallsyms_for_perf(void)
+ 
+ static int kallsyms_open(struct inode *inode, struct file *file)
+ {
++	if (current_uid().val >= 10000)
++		return -ENOENT;
++
+ 	/*
+ 	 * We keep entries in sequence when running over the list.
+ 	 * The reverse sequence would be problematic.
 diff --git a/scripts/setlocalversion b/scripts/setlocalversion
 index e06fcdbd3bc2..515baec13eb7 100755
 --- a/scripts/setlocalversion
