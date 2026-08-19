@@ -399,16 +399,17 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  /*
   * Update the current task's runtime statistics.
   */
-@@ -1040,7 +1210,8 @@ static void update_curr(struct cfs_rq *cfs_rq)
-     update_burst_penalty(curr);
- #endif // CONFIG_SCHED_BORE
+@@ -1035,7 +1205,8 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 	curr->sum_exec_runtime += delta_exec;
+ 	schedstat_add(cfs_rq->exec_clock, delta_exec);
  
--    update_min_vruntime(cfs_rq);
+ 	curr->vruntime += calc_delta_fair(delta_exec, curr);
+-	update_min_vruntime(cfs_rq);
 +	update_deadline(cfs_rq, curr);
 +	update_min_vruntime(cfs_rq);
  
-     if (entity_is_task(curr)) {
-         struct task_struct *curtask = task_of(curr);
+ 	if (entity_is_task(curr)) {
+ 		struct task_struct *curtask = task_of(curr);
 @@ -3267,6 +3438,8 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
  		/* commit outstanding execution time */
  		if (cfs_rq->curr == se)
@@ -487,7 +488,6 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 -	if (!initial) {
 -		unsigned long thresh = sysctl_sched_latency;
 +		lag = se->vlag;
- 
  		/*
 -		 * Halve their sleep time's effect, to allow
 -		 * for a gentler effect of sleepers:
@@ -993,8 +993,8 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +	 *    restores CFS-like sleeper-preempts-runner behaviour without
 +	 *    abandoning EEVDF entirely, and closes the latency gap on ROMs
 +	 *    that register no vendor check_preempt_wakeup hook (AOSP,
-+	 *    LineageOS, PixelExperience) where the frame pipeline has no
-+	 *    vendor module to force-preempt for top-app tasks.
++	 *    LineageOS, PixelExperience) where the scheduler runs unassisted by
++	 *    OEM frame-pipeline logic.
 +	 *
 +	 *    Guard: only when the wakee is eligible (behind V), and the
 +	 *    vruntime gap exceeds wakeup_granularity to avoid ping-pong
@@ -1011,16 +1011,17 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  		if (!next_buddy_marked)
  			set_next_buddy(pse);
  		goto preempt;
-@@ -11312,6 +11596,8 @@ static void task_fork_fair(struct task_struct *p)
+@@ -11425,12 +11425,16 @@ static void task_fork_fair(struct task_struct *p)
  		update_curr(cfs_rq);
  		se->vruntime = curr->vruntime;
  	}
 +	/* EEVDF: new task starts with zero lag. */
 +	se->vlag = 0;
- #ifdef CONFIG_SCHED_BORE
- 	update_burst_score(se);
- #endif // CONFIG_SCHED_BORE
-@@ -11323,10 +11609,12 @@ static void task_fork_fair(struct task_struct *p)
+ 	place_entity(cfs_rq, se, 1);
+ 
+ 	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
+ 		/*
+ 		 * Upon rescheduling, sched_class::put_prev_task() will place
  		 * 'current' within the tree based on its new key value.
  		 */
  		swap(curr->vruntime, se->vruntime);
