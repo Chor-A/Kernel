@@ -1,79 +1,35 @@
 From 8c0ad4c425180a8854f2538bae529bf965d472ee Mon Sep 17 00:00:00 2001
 From: Steambot12 <wilfridus.it@gmail.com>
 Date: Sat, 15 Aug 2026 03:56:07 +0000
-Subject: [PATCH] [BACKPORT] sched/fair: backport EEVDF scheduler from Linux
- 6.6
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
+Subject: [PATCH] [BACKPORT] sched/fair: backport EEVDF scheduler from Linux 6.6
 
 Backport the Earliest Eligible Virtual Deadline First (EEVDF) scheduling
 algorithm from upstream Linux 6.6 to GKI 5.10.  EEVDF replaces the CFS
 buddy-based task picker with a deadline-driven, eligibility-aware picker
 that provides better latency guarantees and provably fair CPU distribution.
 
-Core changes:
-  - sched_entity gains deadline, min_deadline, vlag, slice fields
-    (appended at end of struct to preserve GKI KMI/ABI compatibility)
-  - cfs_rq gains avg_vruntime / avg_load for O(1) weighted-average V
-  - Augmented rbtree (min_deadline) enables O(log n) pick_eevdf()
-  - update_deadline() assigns fresh deadline when slice is exhausted
-  - place_entity() rewritten for lag-based placement with inflation
-  - update_entity_lag() captures lag at dequeue for sleep preservation
-  - check_preempt_tick/wakeup use eligibility instead of vruntime diff
-  - reweight_entity() maintains avg_vruntime across weight changes,
-    properly guarded against curr (not in tree) to avoid corruption
-  - deadline is normalized/denormalized alongside vruntime at every
-    migration, fork, enqueue/dequeue point to stay in sync
+Cross-SoC stability tuning for Android:
+  - RUN_TO_PARITY enabled
+  - Vruntime sleeper assist 
+  - Vendor hooks retained 
 
-New sched features: PLACE_LAG, PLACE_DEADLINE_INITIAL, RUN_TO_PARITY.
-Removed dead CFS functions: wakeup_preempt_entity, sched_vslice,
-__pick_next_entity.  Legacy CFS features GENTLE_FAIR_SLEEPERS and
-START_DEBIT set to false — superseded by PLACE_LAG and
-PLACE_DEADLINE_INITIAL respectively; no code reads them under EEVDF.
-
-Cross-SoC stability tuning:
-  - RUN_TO_PARITY enabled: lets curr keep running at tick time if its
-    slice is not yet exhausted — short-circuits __pick_eevdf()'s O(log n)
-    tree walk to O(1) for the common case, saving ~50 cycles per tick
-    per core.  Does NOT block wakeup preemption (check_preempt_wakeup
-    fires before pick and grants preemption via deadline comparison +
-    vruntime sleeper assist), so UI latency is unaffected.  Primary
-    benefit is power: fewer context switches on lightly loaded Little
-    cores = fewer cache/TLB refills = less active drain
-  - Wakeup preemption relaxed: a waking entity with an earlier deadline
-    preempts immediately without requiring the current entity to be
-    ineligible first; prevents one-slice UI lag on SoCs with wide
-    capacity spreads (MediaTek Dimensity, Exynos) where slice length
-    on Little cores can exceed a full frame budget
-  - Vruntime sleeper assist: when the deadline comparison does not grant
-    preemption (curr just refreshed its deadline), a waking task that is
-    eligible and has a vruntime deficit exceeding wakeup_granularity
-    preempts anyway — restores CFS-like sleeper-preempts-runner behaviour
-    for ROMs without vendor check_preempt_wakeup hooks (AOSP, LineageOS,
-    PixelExperience) where the scheduler runs unassisted by OEM frame-
-    pipeline logic
-  - Removed /proc/sched_eevdf (dead weight, status-only)
-  - Boot message downgraded from pr_err to pr_info
-
-All Android vendor hooks (trace_android_rvh_*) retained and fire at the
-same points as stock CFS — OEM scheduler modules remain functional.
+Signed-off-by: Steambot12 <wilfridus.it@gmail.com>
 ---
- include/linux/sched.h   |   6 +
+ include/linux/sched.h   |   5 +
  kernel/sched/core.c     |   4 +
- kernel/sched/fair.c     | 734 +++++++++++++++++++++++++++++-----------
+ kernel/sched/fair.c     | 728 ++++++++++++++++++++++++++++++----------
  kernel/sched/features.h |  42 ++-
  kernel/sched/sched.h    |   4 +
- 5 files changed, 588 insertions(+), 202 deletions(-)
+ 5 files changed, 584 insertions(+), 199 deletions(-)
 
 diff --git a/include/linux/sched.h b/include/linux/sched.h
-index 82db6a71cf8d..8d22939f717c 100644
+index 82db6a71cf8d..cd85efcc7b9d 100644
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
-@@ -512,6 +512,12 @@ struct sched_entity {
- 	ANDROID_KABI_RESERVE(3);
- 	ANDROID_KABI_RESERVE(4);
- #endif // CONFIG_SCHED_BORE
+@@ -510,6 +510,11 @@ struct sched_entity {
+ 	 * padding - usually instantiated to hold u64 values.
+ 	 */
+ 	u64				padding[8];
 +
 +	/* EEVDF fields — appended at end to preserve KMI */
 +	u64				deadline;
@@ -99,7 +55,7 @@ index 4a6d457ef9b8..d8d4e756cee3 100644
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index 98fadb7f2fdf..ceaf2c144933 100644
+index 98fadb7f2fdf..79bc5edb3fbd 100644
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
 @@ -25,6 +25,7 @@
@@ -119,10 +75,6 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +
 +/*
 + * EEVDF: Weighted average of vruntime across all queued entities.
-+ *
-+ * avg_vruntime tracks sum-of-keys*weight, avg_load tracks sum-of-weights.
-+ * Keys are relative to min_vruntime so they stay small.  The current entity
-+ * is not in the tree, so every reader folds it in on the fly.
 + */
 +static s64 entity_key(struct cfs_rq *cfs_rq, struct sched_entity *se)
 +{
@@ -160,7 +112,6 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +
 +/*
 + * Compute the virtual time V = min_vruntime + weighted-avg(keys).
-+ * This is the EEVDF "fair share" clock.
 + */
 +u64 avg_vruntime(struct cfs_rq *cfs_rq)
 +{
@@ -187,7 +138,6 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +
 +/*
 + * Check whether entity is eligible to run (vruntime <= V).
-+ * Avoids division: checks avg >= key * load algebraically.
 + */
 +int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
 +{
@@ -275,7 +225,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
   */
  static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
  {
-@@ -738,8 +872,33 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -738,8 +872,21 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
  	struct rb_node *parent = NULL;
  	struct sched_entity *entry;
  	bool leftmost = true;
@@ -283,18 +233,6 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  
  	trace_android_rvh_enqueue_entity(cfs_rq, se);
 +
-+	/*
-+	 * GKI 5.10 CFS can produce entities whose vruntime is far from
-+	 * min_vruntime (cgroup migration, throttle/unthrottle, vendor hooks).
-+	 * Old CFS tolerates this because it only compares vruntimes.  EEVDF
-+	 * multiplies entity_key by weight in avg_vruntime tracking; a key
-+	 * beyond ~44 bits overflows s64 and corrupts the weighted average,
-+	 * making every entity ineligible.
-+	 *
-+	 * Snap outlier vruntimes to min_vruntime so they enter the tree
-+	 * without poisoning avg_vruntime.  The ±(1LL << 40) window is
-+	 * ~1.1 trillion ns of virtual time — decades of normal operation.
-+	 */
 +	key = entity_key(cfs_rq, se);
 +	if (unlikely(key > (1LL << 40) || key < -(1LL << 40))) {
 +		s64 offset = se->deadline - se->vruntime;
@@ -309,7 +247,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	/*
  	 * Find the right place in the rbtree:
  	 */
-@@ -759,14 +918,17 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -759,14 +906,17 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
  	}
  
  	rb_link_node(&se->run_node, parent, link);
@@ -330,7 +268,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  }
  
  struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
-@@ -779,16 +941,6 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
+@@ -779,16 +929,6 @@ struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
  	return rb_entry(left, struct sched_entity, run_node);
  }
  
@@ -347,7 +285,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  #ifdef CONFIG_SCHED_DEBUG
  struct sched_entity *__pick_last_entity(struct cfs_rq *cfs_rq)
  {
-@@ -891,16 +1043,6 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -891,16 +1031,6 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
  	return slice;
  }
  
@@ -364,7 +302,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  #include "pelt.h"
  #ifdef CONFIG_SMP
  
-@@ -1009,6 +1151,34 @@ static void update_tg_load_avg(struct cfs_rq *cfs_rq)
+@@ -1009,6 +1139,34 @@ static void update_tg_load_avg(struct cfs_rq *cfs_rq)
  }
  #endif /* CONFIG_SMP */
  
@@ -399,7 +337,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  /*
   * Update the current task's runtime statistics.
   */
-@@ -1035,7 +1205,8 @@ static void update_curr(struct cfs_rq *cfs_rq)
+@@ -1035,7 +1193,8 @@ static void update_curr(struct cfs_rq *cfs_rq)
  	curr->sum_exec_runtime += delta_exec;
  	schedstat_add(cfs_rq->exec_clock, delta_exec);
  
@@ -410,7 +348,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  
  	if (entity_is_task(curr)) {
  		struct task_struct *curtask = task_of(curr);
-@@ -3267,6 +3438,8 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+@@ -3267,6 +3426,8 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
  		/* commit outstanding execution time */
  		if (cfs_rq->curr == se)
  			update_curr(cfs_rq);
@@ -419,7 +357,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  		update_load_sub(&cfs_rq->load, se->load.weight);
  	}
  	dequeue_load_avg(cfs_rq, se);
-@@ -3283,8 +3456,11 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+@@ -3283,8 +3444,11 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
  #endif
  
  	enqueue_load_avg(cfs_rq, se);
@@ -432,7 +370,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  
  }
  
-@@ -4461,57 +4637,75 @@ static inline bool entity_is_long_sleeper(struct sched_entity *se)
+@@ -4461,57 +4625,75 @@ static inline bool entity_is_long_sleeper(struct sched_entity *se)
  	return false;
  }
  
@@ -488,6 +426,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 -	if (!initial) {
 -		unsigned long thresh = sysctl_sched_latency;
 +		lag = se->vlag;
+ 
  		/*
 -		 * Halve their sleep time's effect, to allow
 -		 * for a gentler effect of sleepers:
@@ -548,7 +487,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	trace_android_rvh_place_entity(cfs_rq, se, initial, vruntime);
  }
  
-@@ -4579,8 +4773,10 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+@@ -4579,8 +4761,10 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
  	 * If we're the current task, we must renormalise before calling
  	 * update_curr().
  	 */
@@ -560,7 +499,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  
  	update_curr(cfs_rq);
  
-@@ -4590,8 +4786,10 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+@@ -4590,8 +4774,10 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
  	 * placed in the past could significantly boost this task to the
  	 * fairness detriment of existing tasks.
  	 */
@@ -572,7 +511,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  
  	/*
  	 * When enqueuing a sched_entity, we must:
-@@ -4701,6 +4899,15 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+@@ -4701,6 +4887,15 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
  
  	clear_buddies(cfs_rq, se);
  
@@ -588,7 +527,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	if (se != cfs_rq->curr)
  		__dequeue_entity(cfs_rq, se);
  	se->on_rq = 0;
-@@ -4712,8 +4919,10 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+@@ -4712,8 +4907,10 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
  	 * update_min_vruntime() again, which will discount @se's position and
  	 * can move min_vruntime forward still more.
  	 */
@@ -600,7 +539,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  
  	/* return excess runtime on last dequeue */
  	return_cfs_rq_runtime(cfs_rq);
-@@ -4731,48 +4940,51 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+@@ -4731,48 +4928,51 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
  }
  
  /*
@@ -669,7 +608,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  }
  
  void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
-@@ -4805,76 +5017,171 @@ void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+@@ -4805,76 +5005,171 @@ void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
  	}
  
  	se->prev_sum_exec_runtime = se->sum_exec_runtime;
@@ -886,7 +825,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  static bool check_cfs_rq_runtime(struct cfs_rq *cfs_rq);
  
  static void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
-@@ -7295,6 +7602,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
+@@ -7295,6 +7590,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
  #endif
  
  		se->vruntime -= min_vruntime;
@@ -894,7 +833,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	}
  
  	if (p->on_rq == TASK_ON_RQ_MIGRATING) {
-@@ -7338,55 +7646,6 @@ balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+@@ -7338,55 +7634,6 @@ balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
  }
  #endif /* CONFIG_SMP */
  
@@ -950,7 +889,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  static void set_last_buddy(struct sched_entity *se)
  {
  	if (entity_is_task(se) && unlikely(task_has_idle_policy(task_of(se))))
-@@ -7449,12 +7708,6 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
+@@ -7449,12 +7696,6 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
  	/*
  	 * We can come here with TIF_NEED_RESCHED already set from new task
  	 * wake up path.
@@ -963,7 +902,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	 */
  	if (test_tsk_need_resched(curr))
  		return;
-@@ -7480,11 +7733,42 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
+@@ -7480,11 +7721,42 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
  	if (nopreempt)
  		return;
  	BUG_ON(!pse);
@@ -993,8 +932,8 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +	 *    restores CFS-like sleeper-preempts-runner behaviour without
 +	 *    abandoning EEVDF entirely, and closes the latency gap on ROMs
 +	 *    that register no vendor check_preempt_wakeup hook (AOSP,
-+	 *    LineageOS, PixelExperience) where the scheduler runs unassisted by
-+	 *    OEM frame-pipeline logic.
++	 *    LineageOS, PixelExperience) where the frame pipeline has no
++	 *    vendor module to force-preempt for top-app tasks.
 +	 *
 +	 *    Guard: only when the wakee is eligible (behind V), and the
 +	 *    vruntime gap exceeds wakeup_granularity to avoid ping-pong
@@ -1011,7 +950,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  		if (!next_buddy_marked)
  			set_next_buddy(pse);
  		goto preempt;
-@@ -11425,12 +11425,16 @@ static void task_fork_fair(struct task_struct *p)
+@@ -11413,14 +11685,18 @@ static void task_fork_fair(struct task_struct *p)
  		update_curr(cfs_rq);
  		se->vruntime = curr->vruntime;
  	}
@@ -1034,7 +973,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	rq_unlock(rq, &rf);
  }
  
-@@ -11456,6 +11744,7 @@ static void detach_task_cfs_rq(struct task_struct *p)
+@@ -11444,6 +11720,7 @@ static void detach_task_cfs_rq(struct task_struct *p)
  		 */
  		place_entity(cfs_rq, se, 0);
  		se->vruntime -= cfs_rq->min_vruntime;
@@ -1042,7 +981,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  	}
  
  	detach_entity_cfs_rq(se);
-@@ -11468,8 +11757,10 @@ static void attach_task_cfs_rq(struct task_struct *p)
+@@ -11456,8 +11733,10 @@ static void attach_task_cfs_rq(struct task_struct *p)
  
  	attach_entity_cfs_rq(se);
  
@@ -1054,7 +993,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  }
  
  static void switched_from_fair(struct rq *rq, struct task_struct *p)
-@@ -11526,6 +11817,8 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
+@@ -11514,6 +11793,8 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
  {
  	cfs_rq->tasks_timeline = RB_ROOT_CACHED;
  	cfs_rq->min_vruntime = (u64)(-(1LL << 20));
@@ -1063,7 +1002,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
  #ifndef CONFIG_64BIT
  	cfs_rq->min_vruntime_copy = cfs_rq->min_vruntime;
  #endif
-@@ -11865,7 +12158,58 @@ __init void init_sched_fair_class(void)
+@@ -11853,7 +12134,48 @@ __init void init_sched_fair_class(void)
  #endif
  #endif /* SMP */
  
@@ -1072,8 +1011,7 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +
 +/*
 + * /proc/sched_eevdf — read-only status for EEVDF backport.
-+ * Always present regardless of CONFIG_SCHED_BORE so users can verify
-+ * the EEVDF scheduler is active on any build variant.
++ * Provides verifiable check that the EEVDF scheduler is active.
 + */
 +static int sched_eevdf_show(struct seq_file *m, void *v)
 +{
@@ -1093,11 +1031,6 @@ index 98fadb7f2fdf..ceaf2c144933 100644
 +		   sysctl_sched_wakeup_granularity / 1000000U);
 +	seq_printf(m, "sched_nr_latency:       %u\n",
 +		   sched_nr_latency);
-+#ifdef CONFIG_SCHED_BORE
-+	seq_puts(m, "BORE:                   active\n");
-+#else
-+	seq_puts(m, "BORE:                   not configured\n");
-+#endif
 +	return 0;
 +}
 +
@@ -1143,53 +1076,4 @@ index 5861e2628367..833ada12c8f8 100644
 - * Place new tasks ahead so that they do not starve already running
 - * tasks
 + * Legacy CFS initial placement debit — superseded by EEVDF's
-+ * PLACE_DEADLINE_INITIAL which gives new tasks half a virtual slice.
-+ * Kept false; no code reads it when EEVDF is active.
-  */
--SCHED_FEAT(START_DEBIT, true)
-+SCHED_FEAT(START_DEBIT, false)
-+
-+/*
-+ * EEVDF: Preserve lag across sleeps — entity wakes with the same
-+ * fairness debt/credit it had when it went to sleep.
-+ */
-+SCHED_FEAT(PLACE_LAG, true)
-+
-+/*
-+ * EEVDF: Give newly forked/execed tasks only half a slice worth of
-+ * deadline, so they do not immediately preempt long-running tasks.
-+ */
-+SCHED_FEAT(PLACE_DEADLINE_INITIAL, true)
-+
-+/*
-+ * EEVDF: Let the current task keep running at tick time if it hasn't
-+ * exhausted its slice yet — __pick_eevdf() returns curr immediately
-+ * instead of doing an O(log n) tree walk, saving ~50 cycles per tick
-+ * on lightly loaded cores.
-+ *
-+ * This does NOT block wakeup preemption: check_preempt_wakeup() fires
-+ * before pick_next_entity() and grants preemption via deadline
-+ * comparison + vruntime sleeper assist.  RUN_TO_PARITY only skips the
-+ * tick-driven re-evaluation, which matters for CPU-bound background
-+ * tasks — exactly the workload where fewer context switches save power
-+ * without affecting UI latency.
-+ */
-+SCHED_FEAT(RUN_TO_PARITY, true)
- 
- /*
-  * Prefer to schedule the task we woke last (assuming it failed
-diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 69991be85e0d..bcabdaffa1d8 100644
---- a/kernel/sched/sched.h
-+++ b/kernel/sched/sched.h
-@@ -617,6 +617,10 @@ struct cfs_rq {
- 
- 	ANDROID_VENDOR_DATA_ARRAY(1, 16);
- #endif /* CONFIG_FAIR_GROUP_SCHED */
-+
-+	/* EEVDF fields — appended at end to preserve KMI/ABI layout */
-+	s64			avg_vruntime;
-+	long			avg_load;
- };
- 
- static inline int rt_bandwidth_enabled(void)
++ * PLACE_DEADLINE_INITIAL which gives new tasks half a
