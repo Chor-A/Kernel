@@ -36,16 +36,15 @@ diff --git a/arch/arm64/configs/gki_defconfig b/arch/arm64/configs/gki_defconfig
 index 00cdb092ac80..801b326a311c 100644
 --- a/arch/arm64/configs/gki_defconfig
 +++ b/arch/arm64/configs/gki_defconfig
-@@ -742,3 +742,4 @@ CONFIG_HIST_TRIGGERS=y
+@@ -740,3 +740,4 @@ CONFIG_HIST_TRIGGERS=y
  CONFIG_FUNCTION_ERROR_INJECTION=y
  # CONFIG_RUNTIME_TESTING_MENU is not set
- CONFIG_CPU_FREQ_GOV_VORPAL=y
 +CONFIG_NOMOUNT=y
 diff --git a/fs/Kconfig b/fs/Kconfig
 index 2d618f2356cb..84ddfea9d040 100644
 --- a/fs/Kconfig
 +++ b/fs/Kconfig
-@@ -352,4 +352,11 @@ source "fs/unicode/Kconfig"
+@@ -351,4 +351,11 @@ source "fs/unicode/Kconfig"
  config IO_WQ
  	bool
  
@@ -256,7 +255,7 @@ index 000000000000..b8a830950de7
 +}
 +
 +/**
-+ * __nomount_is_traversal_allowed_rcu - Check if an inode number corresponds to a 
++ * __nomount_is_traversal_allowed_rcu - Check if an inode number corresponds to a
 + * directory with traversal permissions
 + * @inode: The inode to check
 + *
@@ -389,12 +388,12 @@ index 000000000000..b8a830950de7
 + * @buf: The buffer to write the result into
 + * @buflen: Length of the buffer
 + *
-+ * Replaces the real physical path of an injected file with its intended 
++ * Replaces the real physical path of an injected file with its intended
 + * virtual path to prevent information leaks in Userspace.
-+ * 
++ *
 + * Returns a pointer within the buffer where the virtual path begins.
 + */
-+char *nomount_handle_dpath(const struct path *path, char *buf, int buflen) 
++char *nomount_handle_dpath(const struct path *path, char *buf, int buflen)
 +{
 +    struct nomount_rule *rule;
 +    char *res; int len;
@@ -425,8 +424,8 @@ index 000000000000..b8a830950de7
 + * @inode: The inode being accessed
 + * @mask: The requested permission mask
 + *
-+ * Return: > 0 to bypass native checks (allow read/exec), 
-+ *         < 0 to explicitly deny (block writes), 
++ * Return: > 0 to bypass native checks (allow read/exec),
++ *         < 0 to explicitly deny (block writes),
 + *           0 to fallback to standard VFS permissions.
 + */
 +int nomount_handle_permission(struct inode *inode, int mask)
@@ -663,7 +662,7 @@ index 000000000000..b8a830950de7
 + * @path: The path being evaluated
 + * @buf: The statfs struct to modify
 + *
-+ * Injects the correct Magic Number (e.g., ext4, erofs) to match the 
++ * Injects the correct Magic Number (e.g., ext4, erofs) to match the
 + * virtual partition, preventing detection via filesystem type checks.
 + */
 +void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf)
@@ -706,9 +705,9 @@ index 000000000000..b8a830950de7
 + * @dev: Pointer to the device ID variable to overwrite
 + * @ino: Pointer to the inode number variable to overwrite
 + *
-+ * Ensures that shared libraries or binaries executed via NoMount show 
++ * Ensures that shared libraries or binaries executed via NoMount show
 + * the correct virtual device and inode in process memory maps.
-+ * 
++ *
 + * Returns true if the metadata was spoofed.
 + */
 +bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long *ino)
@@ -785,8 +784,8 @@ index 000000000000..b8a830950de7
 + * @rule: The rule containing the absolute real_path string
 + * @d: A valid referenced dentry resolved from kern_path
 + *
-+ * This function recursively climbs the dentry tree starting from the provided 
-+ * dentry. It registers every parent inode encountered and handles the extraction 
++ * This function recursively climbs the dentry tree starting from the provided
++ * dentry. It registers every parent inode encountered and handles the extraction
 + * of private directory paths automatically when traversal permissions are restricted.
 + *
 + * This function relies on the caller to provide a valid reference (dget).
@@ -839,10 +838,10 @@ index 000000000000..b8a830950de7
 + * @type: File type (DT_DIR, DT_REG, etc.)
 + * @child_fake_ino: The synthetic inode number for the virtual file
 + *
-+ * This function performs an hash check to see if the child already exists 
++ * This function performs an hash check to see if the child already exists
 + * to prevent duplicates, then appends it to the directory's child array.
 + *
-+ * NOTE: Caller MUST hold the mutex lock to prevent concurrent writers, 
++ * NOTE: Caller MUST hold the mutex lock to prevent concurrent writers,
 + * but RCU readers can continue without blocking.
 + */
 +static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, struct nomount_rule *rule,
@@ -1849,49 +1848,4 @@ index c6a2e10983f8..5d53dffcffd5 100644
 +++ b/fs/stat.c
 @@ -100,6 +100,10 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
  }
- EXPORT_SYMBOL(vfs_getattr_nosec);
- 
-+#ifdef CONFIG_NOMOUNT
-+extern int nomount_handle_getattr(int ret, const struct path *path, struct kstat *stat);
-+#endif
-+
- /*
-  * vfs_getattr - Get the enhanced basic attributes of a file
-  * @path: The file of interest
-@@ -129,7 +133,11 @@ int vfs_getattr(const struct path *path, struct kstat *stat,
- 	retval = security_inode_getattr(path);
- 	if (retval)
- 		return retval;
-+#ifdef CONFIG_NOMOUNT
-+    return nomount_handle_getattr(vfs_getattr_nosec(path, stat, request_mask, query_flags), path, stat);
-+#else
- 	return vfs_getattr_nosec(path, stat, request_mask, query_flags);
-+#endif
- }
- EXPORT_SYMBOL(vfs_getattr);
- 
-diff --git a/fs/statfs.c b/fs/statfs.c
-index d42b44dc0e49..6ad5106e12bc 100644
---- a/fs/statfs.c
-+++ b/fs/statfs.c
-@@ -11,6 +11,10 @@
- #include <linux/compat.h>
- #include "internal.h"
- 
-+#ifdef CONFIG_NOMOUNT
-+extern void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf);
-+#endif
-+
- static int flags_by_mnt(int mnt_flags)
- {
- 	int flags = 0;
-@@ -90,6 +94,9 @@ int vfs_statfs(const struct path *path, struct kstatfs *buf)
- 	error = statfs_by_dentry(path->dentry, buf);
- 	if (!error)
- 		buf->f_flags = calculate_f_flags(path->mnt);
-+#ifdef CONFIG_NOMOUNT
-+	nomount_spoof_statfs(path, buf);
-+#endif
- 	return error;
- }
- EXPORT_SYMBOL(vfs_statfs);
+ EXPOR
