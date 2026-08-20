@@ -127,7 +127,7 @@ new file mode 100644
 index 000000000..b8a830950
 --- /dev/null
 +++ b/fs/nomount.c
-@@ -0,0 +1,1468 @@
+@@ -0,0 +1,1479 @@
 +#include <linux/init.h>
 +#include <linux/namei.h>
 +#include <linux/slab.h>
@@ -135,7 +135,20 @@ index 000000000..b8a830950
 +#include <linux/statfs.h>
 +#include <linux/fs_struct.h>
 +#include <linux/version.h>
++#include <linux/sched.h>
++#include <linux/dcache.h>
 +#include "nomount.h"
++
++static inline char *nm_kmemdup_nul(const char *s, size_t len, gfp_t gfp) {
++    char *buf;
++    if (!s) return NULL;
++    buf = kmalloc(len + 1, gfp);
++    if (buf) {
++        memcpy(buf, s, len);
++        buf[len] = '\0';
++    }
++    return buf;
++}
 +
 +static struct kmem_cache *nm_rule_cachep, *nm_dir_cachep, *nm_uid_cachep;
 +atomic_t nm_active_rules = ATOMIC_INIT(0);
@@ -764,7 +777,7 @@ index 000000000..b8a830950
 +                    dir_node->is_private = true;
 +                    nm_debug("Registered private dir: %s (ino: %lu)\n", r_tmp, inode->i_ino);
 +                    dir_node->dir.len = strlen(r_tmp);
-+                    dir_node->dir_path = kmemdup_nul(r_tmp, dir_node->dir.len, GFP_KERNEL);
++                    dir_node->dir_path = nm_kmemdup_nul(r_tmp, dir_node->dir.len, GFP_KERNEL);
 +                    if (likely(dir_node->dir_path)) {
 +                        list_add_tail_rcu(&dir_node->private_list, &nomount_private_dirs_list);
 +                    }
@@ -997,14 +1010,14 @@ index 000000000..b8a830950
 +                break;
 +            }
 +
-            irule = pending_rules[p_count - 1];
++            irule = pending_rules[p_count - 1];
 +
 +            INIT_LIST_HEAD(&irule->list);
 +            INIT_HLIST_NODE(&irule->vpath_node);
 +            INIT_HLIST_NODE(&irule->basename_node);
 +
-+            irule->virtual_path = kmemdup_nul(v_tmp, cur_v_len, GFP_KERNEL);
-+            irule->real_path = slash_r ? kmemdup_nul(r_tmp, cur_r_len, GFP_KERNEL) : kstrdup("/", GFP_KERNEL);
++            irule->virtual_path = nm_kmemdup_nul(v_tmp, cur_v_len, GFP_KERNEL);
++            irule->real_path = slash_r ? nm_kmemdup_nul(r_tmp, cur_r_len, GFP_KERNEL) : kstrdup("/", GFP_KERNEL);
 +            if (unlikely(!irule->virtual_path || !irule->real_path)) {
 +                if (irule->virtual_path) kfree(irule->virtual_path);
 +                if (irule->real_path) kfree(irule->real_path);
@@ -1098,8 +1111,8 @@ index 000000000..b8a830950
 +    if (!rule)
 +        return -ENOMEM;
 +
-+    rule->virtual_path = kmemdup_nul(v_path, v_len, GFP_KERNEL);
-+    rule->real_path = kmemdup_nul(r_path, r_len, GFP_KERNEL);
++    rule->virtual_path = nm_kmemdup_nul(v_path, v_len, GFP_KERNEL);
++    rule->real_path = nm_kmemdup_nul(r_path, r_len, GFP_KERNEL);
 +
 +    if (!rule->virtual_path || !rule->real_path) {
 +        if (rule->virtual_path) kfree(rule->virtual_path);
@@ -1431,7 +1444,7 @@ index 000000000..b8a830950
 +             nla_put_string(skb, NOMOUNT_ATTR_REAL_PATH, rule->real_path) ||
 +             nla_put_u32(skb, NOMOUNT_ATTR_FLAGS, rule->flags)) {
 +
-+            genlmsg_cancel(skb, hdr);
+             genlmsg_cancel(skb, hdr);
 +            break;
 +        }
 +
@@ -1601,7 +1614,7 @@ new file mode 100644
 index 000000000..9fa3e8a93
 --- /dev/null
 +++ b/fs/nomount.h
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,149 @@
 +#ifndef _LINUX_NOMOUNT_H
 +#define _LINUX_NOMOUNT_H
 +
@@ -1609,6 +1622,10 @@ index 000000000..9fa3e8a93
 +#include <linux/list.h>
 +#include <linux/hashtable.h>
 +#include <linux/atomic.h>
++#include <linux/fs.h>
++#include <linux/path.h>
++#include <linux/stat.h>
++#include <linux/dcache.h>
 +#include <net/sock.h>
 +#include <net/genetlink.h>
 +#include <linux/version.h>
@@ -1785,11 +1802,12 @@ index 09e8ed7d4..9332d6b0c 100644
  
  int iterate_dir(struct file *file, struct dir_context *ctx)
  {
-@@ -61,10 +64,14 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
+@@ -61,10 +64,15 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
  	res = -ENOENT;
  	if (!IS_DEADDIR(inode)) {
  		ctx->pos = file->f_pos;
 +#ifdef CONFIG_NOMOUNT
++		(void)shared;
 +		res = nomount_handle_iterate_dir(file, ctx);
 +#else
  		if (shared)
@@ -1838,7 +1856,7 @@ index d42b44dc0..6ad5106e1 100644
 +#ifdef CONFIG_NOMOUNT
 +extern void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf);
 +#endif
- 
++
  static int flags_by_mnt(int mnt_flags)
  {
  	int flags = 0;
