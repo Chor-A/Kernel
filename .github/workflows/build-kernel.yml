@@ -80,7 +80,7 @@ jobs:
       CCACHE_OPT: ${{ inputs.ccache && '1' || '' }}
       GITHUB_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Free disk space & Maximize Build Space 🧹
         run: |
@@ -91,12 +91,12 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install Host Dependencies (BTF/Build tools/QEMU)
+      - name: Install Host Dependencies (BTF/Build tools)
         run: |
           sudo apt-get update
           sudo apt-get install --reinstall -y \
             build-essential libelf-dev libssl-dev bison flex bc \
-            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch zip dos2unix curl python3-pip qemu-system-arm
+            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch zip dos2unix curl qemu-system-arm
 
       - name: Build and Install Pahole v1.31 from Source (User BTF Fix) 🛠️
         run: |
@@ -683,11 +683,11 @@ jobs:
           echo "✅ AVB Signed Boot Image Ready: work/pkg/boot-gki.img"
           ls -lh work/pkg/boot-gki.img
 
-      - name: Upload Artifacts
-        if: ${{ !inputs.publish_release }}
-        uses: actions/upload-artifact@v4
+      - name: Upload flashable zip
+        if: ${{ inputs.pack_flashable && !inputs.publish_release }}
+        uses: actions/upload-artifact@v5
         with:
-          name: cloudfox-kernel-build
+          name: kernel-anykernel3-zip
           path: |
             work/pkg/cloudfox-kernel-anykernel3.zip
             work/pkg/boot-gki.img
