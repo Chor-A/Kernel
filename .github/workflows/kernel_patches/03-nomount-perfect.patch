@@ -1441,10 +1441,9 @@ index 000000000..b8a830950
 +            break;
 +
 +        if (nla_put_string(skb, NOMOUNT_ATTR_VIRTUAL_PATH, rule->virtual_path) ||
-+             nla_put_string(skb, NOMOUNT_ATTR_REAL_PATH, rule->real_path) ||
-+             nla_put_u32(skb, NOMOUNT_ATTR_FLAGS, rule->flags)) {
-+
-             genlmsg_cancel(skb, hdr);
++            nla_put_string(skb, NOMOUNT_ATTR_REAL_PATH, rule->real_path) ||
++            nla_put_u32(skb, NOMOUNT_ATTR_FLAGS, rule->flags)) {
++            genlmsg_cancel(skb, hdr);
 +            break;
 +        }
 +
@@ -1506,8 +1505,10 @@ index 000000000..b8a830950
 +            break; 
 +        }
 +    }
-+    atomic_dec(&nm_active_uids);
-+    if (atomic_read(&nm_active_uids) == 0) static_branch_disable(&nomount_active_uids);
++    if (found) {
++        atomic_dec(&nm_active_uids);
++        if (atomic_read(&nm_active_uids) == 0) static_branch_disable(&nomount_active_uids);
++    }
 +    mutex_unlock(&nomount_write_mutex);
 +
 +    if (found && entry) {
