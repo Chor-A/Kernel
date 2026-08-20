@@ -423,7 +423,7 @@ index 000000000..b8a830950
 + * Returns the modified filename struct, or the original if no match.
 + */
 +struct filename *nomount_handle_getname(struct filename *name)
-{
++{
 +    struct nomount_rule *rule;
 +    const char *check_name, *s, *last_slash, *page_buf = NULL;
 +    size_t name_len, b_len, r_len;
@@ -502,7 +502,7 @@ index 000000000..b8a830950
 + * inject virtual directory entries into the directory listing.
 + */
 +int nomount_handle_iterate_dir(struct file *file, struct dir_context *ctx)
-{
++{
 +    struct nomount_dir_node *curr_dir;
 +    struct nm_child_array *array = NULL;
 +    loff_t old_pos = ctx->pos;
@@ -587,7 +587,7 @@ index 000000000..b8a830950
 + * Returns the original return code.
 + */
 +int nomount_handle_getattr(int ret, const struct path *path, struct kstat *stat)
-{
++{
 +    struct nm_inode_node *inode_node;
 +    struct nomount_rule *rule;
 +    struct inode *inode;
@@ -624,7 +624,7 @@ index 000000000..b8a830950
 + * virtual partition, preventing detection via filesystem type checks.
 + */
 +void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf)
-{
++{
 +    struct nm_inode_node *inode_node;
 +    struct nomount_rule *rule = NULL;
 +    struct inode *inode;
@@ -669,7 +669,7 @@ index 000000000..b8a830950
 + * Returns true if the metadata was spoofed.
 + */
 +bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long *ino)
-{
++{
 +    struct nm_inode_node *inode_node;
 +    struct nomount_rule *rule;
 +
@@ -708,7 +708,7 @@ index 000000000..b8a830950
 + * Return a pointer to the nomount_dir_node on success, NULL on failure (ENOMEM).
 + */
 +static inline struct nomount_dir_node* __nomount_get_or_create_dir(unsigned long ino, dev_t dev)
-{
++{
 +    struct nm_inode_node *inode_node;
 +    struct nomount_dir_node *dir_node;
 +
@@ -749,7 +749,7 @@ index 000000000..b8a830950
 + * This function relies on the caller to provide a valid reference (dget).
 + */
 +static void __nomount_collect_parents(struct nomount_rule *rule, struct dentry *d)
-{
++{
 +    struct dentry *parent;
 +    char *r_tmp = rule->real_path, *slash, *slashes[32];
 +    int p_count = 0;
@@ -805,7 +805,7 @@ index 000000000..b8a830950
 +static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, struct nomount_rule *rule,
 +                                          const char *name, size_t name_len, u32 name_hash,
 +                                          unsigned char type, unsigned long child_fake_ino)
-{
++{
 +    struct nm_child_array *old_array, *new_array;
 +    u32 i, old_num = 0;
 +
@@ -845,7 +845,7 @@ index 000000000..b8a830950
 +
 +static void __nomount_delete_child_locked(struct nomount_dir_node *dir_node, unsigned long fake_ino, 
 +                                          struct hlist_head *d_victims)
-{
++{
 +    struct nm_child_array *old_array, *new_array;
 +    int found_idx = -1;
 +    u32 i, num, dst = 0;
@@ -897,7 +897,7 @@ index 000000000..b8a830950
 + * Returns 0 on success, or negative error code (e.g., -ENOMEM) on failure.
 + */
 +static int nomount_generate_virtual_topology(struct nomount_rule *rule)
-{
++{
 +    struct nomount_rule *ex, *irule = NULL, *t_rule, *pending_rules[32];
 +    struct path p_path, r_path_struct;
 +    char *v_tmp = rule->virtual_path, *r_tmp = rule->real_path;
@@ -1081,7 +1081,7 @@ index 000000000..b8a830950
 +/*** Rule Operations ***/
 +
 +static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len, u16 r_len, u32 flags)
-{
++{
 +    struct nomount_rule *rule, *existing, *victim = NULL;
 +    struct path path_main, r_path_struct_main;
 +    struct dentry *r_path_dentry = NULL;
@@ -1214,7 +1214,7 @@ index 000000000..b8a830950
 +static void __nomount_del_rule(const char *v_path, size_t v_len,
 +                               struct list_head *r_victims,
 +                               struct hlist_head *d_victims)
-{
++{
 +    struct nomount_rule *rule;
 +    u32 hash = full_name_hash(NULL, v_path, v_len);
 +
@@ -1237,7 +1237,7 @@ index 000000000..b8a830950
 +}
 +
 +static void __nomount_clear_all(void)
-{
++{
 +    struct nomount_rule *rule, *tmp_rule;
 +    struct nomount_dir_node *dir_node, *tmp_dir;
 +    struct nomount_uid_node *uid_node;
@@ -1301,7 +1301,7 @@ index 000000000..b8a830950
 +static struct genl_family nomount_genl_family;
 +
 +static int nomount_genl_add_rule(struct sk_buff *skb, struct genl_info *info)
-{
++{
 +    if (info->attrs[NOMOUNT_ATTR_PAYLOAD]) {
 +        struct nlattr *attr = info->attrs[NOMOUNT_ATTR_PAYLOAD];
 +        const char *data = nla_data(attr);
@@ -1353,7 +1353,7 @@ index 000000000..b8a830950
 +}
 +
 +static int nomount_genl_del_rule(struct sk_buff *skb, struct genl_info *info)
-{
++{
 +    LIST_HEAD(r_victims);
 +    HLIST_HEAD(d_victims);
 +    struct nomount_rule *rule, *tmp_r;
@@ -1404,7 +1404,7 @@ index 000000000..b8a830950
 +}
 +
 +static int nomount_genl_clear_rules(struct sk_buff *skb, struct genl_info *info)
-{
++{
 +    mutex_lock(&nomount_write_mutex);
 +    __nomount_clear_all();
 +    mutex_unlock(&nomount_write_mutex);
@@ -1413,7 +1413,7 @@ index 000000000..b8a830950
 +}
 +
 +static int nomount_genl_dump_rules(struct sk_buff *skb, struct netlink_callback *cb)
-{
++{
 +    struct nomount_rule *rule;
 +    int idx = 0; void *hdr;
 +    int start_idx = cb->args[0];
@@ -1446,7 +1446,7 @@ index 000000000..b8a830950
 +}
 +
 +static int nomount_genl_add_uid(struct sk_buff *skb, struct genl_info *info)
-{
++{
 +    unsigned int uid;
 +    struct nomount_uid_node *entry;
 +
@@ -1473,7 +1473,7 @@ index 000000000..b8a830950
 +}
 +
 +static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
-{
++{
 +    unsigned int uid;
 +    struct nomount_uid_node *entry;
 +    struct hlist_node *tmp;
@@ -1507,7 +1507,7 @@ index 000000000..b8a830950
 +}
 +
 +static int nomount_genl_get_version(struct sk_buff *skb, struct genl_info *info)
-{
++{
 +    struct sk_buff *msg;
 +    void *hdr;
 +    int ret;
