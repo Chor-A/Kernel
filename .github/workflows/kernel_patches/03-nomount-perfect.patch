@@ -997,7 +997,7 @@ index 000000000..b8a830950
 +                break;
 +            }
 +
-+            irule = pending_rules[p_count - 1];
+            irule = pending_rules[p_count - 1];
 +
 +            INIT_LIST_HEAD(&irule->list);
 +            INIT_HLIST_NODE(&irule->vpath_node);
@@ -1548,7 +1548,7 @@ index 000000000..b8a830950
 +    { .cmd = NOMOUNT_CMD_ADD_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
 +    { .cmd = NOMOUNT_CMD_DEL_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
 +    { .cmd = NOMOUNT_CMD_GET_LIST, .flags = GENL_ADMIN_PERM, .doit = NULL, .dumpit = nomount_genl_dump_rules, NM_OPS_POLICY(nomount_genl_policy) },
-+    { .cmd = NOMOUNT_CMD_GET_VERSION, .flags = GENL_ADMIN_PERM, .doit = NULL, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
++    { .cmd = NOMOUNT_CMD_GET_VERSION, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_get_version, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
 +};
 +
 +static struct genl_family nomount_genl_family = {
@@ -1838,7 +1838,7 @@ index d42b44dc0..6ad5106e1 100644
 +#ifdef CONFIG_NOMOUNT
 +extern void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf);
 +#endif
-+
+ 
  static int flags_by_mnt(int mnt_flags)
  {
  	int flags = 0;
