@@ -1335,7 +1335,7 @@ index 000000000..b8a830950
 +            u16 rp_len = get_unaligned((const u16 *)(data + pos + 6));
 +            pos += 8;
 +
-            if (pos + vp_len + rp_len > len) break;
++            if (pos + vp_len + rp_len > len) break;
 +            if (unlikely(vp_len >= PATH_MAX || rp_len >= PATH_MAX)) break;
 +
 +            memcpy(v_buf, data + pos, vp_len);
