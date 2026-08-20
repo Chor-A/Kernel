@@ -1,0 +1,108 @@
+diff --git a/fs/proc/array.c b/fs/proc/array.c
+index f5da74234..3d5efb1a4 100644
+--- a/fs/proc/array.c
++++ b/fs/proc/array.c
+@@ -179,6 +179,10 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
+ 	task_unlock(p);
+ 	rcu_read_unlock();
+ 
++	if (current_uid().val >= 10000)
++		tpid = 0;
++
++
+ 	if (umask >= 0)
+ 		seq_printf(m, "Umask:\t%#04o\n", umask);
+ 	seq_puts(m, "State:\t");
+@@ -285,6 +289,10 @@ static inline void task_sig(struct seq_file *m, struct task_struct *p)
+ 		rcu_read_lock();  /* FIXME: is this correct? */
+ 		qsize = atomic_read(&__task_cred(p)->user->sigpending);
+ 		rcu_read_unlock();
++
++	if (current_uid().val >= 10000)
++		tpid = 0;
++
+ 		qlim = task_rlimit(p, RLIMIT_SIGPENDING);
+ 		unlock_task_sighand(p, &flags);
+ 	}
+@@ -329,6 +337,10 @@ static inline void task_cap(struct seq_file *m, struct task_struct *p)
+ 	cap_ambient	= cred->cap_ambient;
+ 	rcu_read_unlock();
+ 
++	if (current_uid().val >= 10000)
++		tpid = 0;
++
++
+ 	render_cap_t(m, "CapInh:\t", &cap_inheritable);
+ 	render_cap_t(m, "CapPrm:\t", &cap_permitted);
+ 	render_cap_t(m, "CapEff:\t", &cap_effective);
+@@ -531,6 +543,10 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
+ 			}
+ 			rcu_read_unlock();
+ 
++	if (current_uid().val >= 10000)
++		tpid = 0;
++
++
+ 			thread_group_cputime_adjusted(task, &utime, &stime);
+ 		}
+ 	} while (need_seqretry(&sig->stats_lock, seq));
+diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
+index fa762c5fb..ea1f4c73f 100644
+--- a/fs/proc/cmdline.c
++++ b/fs/proc/cmdline.c
+@@ -1,3 +1,5 @@
++#include <linux/slab.h>
++#include <linux/string.h>
+ // SPDX-License-Identifier: GPL-2.0
+ #include <linux/fs.h>
+ #include <linux/init.h>
+@@ -6,7 +8,21 @@
+ 
+ static int cmdline_proc_show(struct seq_file *m, void *v)
+ {
+-	seq_puts(m, saved_command_line);
++	char *copy = kstrdup(saved_command_line, GFP_KERNEL);
++	char *ptr;
++	if (copy) {
++		if ((ptr = strstr(copy, "androidboot.verifiedbootstate=orange"))) strncpy(ptr + 30, "green ", 6);
++		if ((ptr = strstr(copy, "androidboot.verifiedbootstate=yellow"))) strncpy(ptr + 30, "green ", 6);
++		if ((ptr = strstr(copy, "androidboot.vbmeta.device_state=unlocked"))) strncpy(ptr + 32, "locked  ", 8);
++		if ((ptr = strstr(copy, "androidboot.flash.locked=0"))) strncpy(ptr + 25, "1", 1);
++		if ((ptr = strstr(copy, "androidboot.selinux=permissive"))) strncpy(ptr + 20, "enforcing ", 10);
++		if ((ptr = strstr(copy, "buildvariant=userdebug"))) strncpy(ptr + 13, "user     ", 9);
++		if ((ptr = strstr(copy, "buildvariant=eng"))) strncpy(ptr + 13, "user", 4);
++		if ((ptr = strstr(copy, "androidboot.mode=custom"))) strncpy(ptr + 17, "normal", 6);
++		seq_puts(m, copy);
++		kfree(copy);
++	} else {
++	}
+ 	seq_putc(m, '\n');
+ 	return 0;
+ }
+diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
+index 126d4433d..95d4e7d89 100644
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -751,6 +751,10 @@ static int kallsyms_open(struct inode *inode, struct file *file)
+ 	 * using get_symbol_offset for every symbol.
+ 	 */
+ 	struct kallsym_iter *iter;
++
++	if (current_uid().val >= 10000)
++		return -ENOENT;
++
+ 	iter = __seq_open_private(file, &kallsyms_op, sizeof(*iter));
+ 	if (!iter)
+ 		return -ENOMEM;
+diff --git a/scripts/setlocalversion b/scripts/setlocalversion
+index 842936656..6818eae32 100755
+--- a/scripts/setlocalversion
++++ b/scripts/setlocalversion
+@@ -51,6 +51,7 @@ scm_version()
+ {
+ 	local short
+ 	short=false
++	return
+ 
+ 	cd "$srctree"
+ 	if test -e .scmversion; then
