@@ -1,0 +1,76 @@
+diff --git a/fs/proc/array.c b/fs/proc/array.c
+--- a/fs/proc/array.c
++++ b/fs/proc/array.c
+@@ -179,6 +179,9 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
+ 	task_unlock(p);
+ 	rcu_read_unlock();
+ 
++	if (current_uid().val >= 10000)
++		tpid = 0;
++
+ 	if (umask >= 0)
+ 		seq_printf(m, "Umask:\t%#04o\n", umask);
+ 	seq_puts(m, "State:\t");
+diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -747,6 +747,9 @@ static int kallsyms_open(struct inode *inode, struct file *file)
+ {
+ 	struct kallsym_iter *iter;
+ 
++	if (current_uid().val >= 10000)
++		return -ENOENT;
++
+ 	/*
+ 	 * We keep iterator in m->private, since normal case is to
+ 	 * s_start from where we left off, so we avoid doing
+diff --git a/scripts/setlocalversion b/scripts/setlocalversion
+--- a/scripts/setlocalversion
++++ b/scripts/setlocalversion
+@@ -51,6 +51,7 @@ scm_version()
+ {
+ 	local short
+ 	short=false
++	return
+ 
+ 	cd "$srctree"
+ 	if test -e .scmversion; then
+diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
+--- a/fs/proc/cmdline.c
++++ b/fs/proc/cmdline.c
+@@ -1,1 +1,1 @@
+ #include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/string.h>
+ 
+ static int cmdline_proc_show(struct seq_file *m, void *v)
+ {
+-       seq_puts(m, saved_command_line);
++       char *copy = kstrdup(saved_command_line, GFP_KERNEL);
++       char *ptr;
++
++       if (copy) {
++               if ((ptr = strstr(copy, "androidboot.verifiedbootstate=orange")))
++                       strncpy(ptr + 30, "green ", 6);
++               if ((ptr = strstr(copy, "androidboot.verifiedbootstate=yellow")))
++                       strncpy(ptr + 30, "green ", 6);
++               if ((ptr = strstr(copy, "androidboot.vbmeta.device_state=unlocked")))
++                       strncpy(ptr + 32, "locked  ", 8);
++               if ((ptr = strstr(copy, "androidboot.flash.locked=0")))
++                       strncpy(ptr + 25, "1", 1);
++               if ((ptr = strstr(copy, "androidboot.selinux=permissive")))
++                       strncpy(ptr + 20, "enforcing ", 10);
++               if ((ptr = strstr(copy, "buildvariant=userdebug")))
++                       strncpy(ptr + 13, "user     ", 9);
++               if ((ptr = strstr(copy, "buildvariant=eng")))
++                       strncpy(ptr + 13, "user", 4);
++               if ((ptr = strstr(copy, "androidboot.mode=custom")))
++                       strncpy(ptr + 17, "normal", 6);
++
++               seq_puts(m, copy);
++               kfree(copy);
++       } else {
++               seq_puts(m, saved_command_line);
++       }
++
+        seq_putc(m, '\n');
