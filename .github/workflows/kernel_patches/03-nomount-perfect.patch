@@ -387,7 +387,7 @@ index 000000000..b8a830950
 + *           0 to fallback to standard VFS permissions.
 + */
 +int nomount_handle_permission(struct inode *inode, int mask)
-{
++{
 +    bool is_injected = false, is_dir = false;
 +
 +    if (__nomount_should_skip() || IS_ERR_OR_NULL(inode)) return 0;
@@ -980,7 +980,7 @@ index 000000000..b8a830950
 +                inherited_fs_type = p_path.dentry->d_sb->s_magic;
 +            }
 +            current_parent_ino = d_backing_inode(p_path.dentry)->i_ino;
-+            current_parent_dev = d_backing_inode(p_path.dentry)->i_sb->s_dev;
++            current_parent_dev = p_path.dentry->d_sb->s_dev;
 +            child_name = slash_v + 1;
 +            child_name_len = strlen(child_name);
 +            child_name_hash = full_name_hash(NULL, child_name, child_name_len);
@@ -1081,7 +1081,7 @@ index 000000000..b8a830950
 +/*** Rule Operations ***/
 +
 +static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len, u16 r_len, u32 flags)
-+{
+{
 +    struct nomount_rule *rule, *existing, *victim = NULL;
 +    struct path path_main, r_path_struct_main;
 +    struct dentry *r_path_dentry = NULL;
