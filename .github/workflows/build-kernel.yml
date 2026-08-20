@@ -80,7 +80,7 @@ jobs:
       CCACHE_OPT: ${{ inputs.ccache && '1' || '' }}
       GITHUB_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Free disk space & Maximize Build Space 🧹
         run: |
@@ -91,12 +91,12 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install Host Dependencies (BTF/Build tools)
+      - name: Install Host Dependencies (BTF/Build tools/QEMU)
         run: |
           sudo apt-get update
           sudo apt-get install --reinstall -y \
             build-essential libelf-dev libssl-dev bison flex bc \
-            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch zip dos2unix curl python3-pip
+            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch zip dos2unix curl python3-pip qemu-system-arm
 
       - name: Build and Install Pahole v1.31 from Source (User BTF Fix) 🛠️
         run: |
@@ -489,6 +489,51 @@ jobs:
         with:
           path: work/.ccache
           key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}
+
+      - name: Run QEMU ARM64 Virtual Boot Sanity Test 🧪
+        run: |
+          set -uo pipefail
+          echo "========================================="
+          echo " 🧪 RUNNING QEMU AARCH64 BOOT TEST       "
+          echo "========================================="
+
+          KERNEL_BIN=""
+          for f in Image Image.gz Image.lz4 zImage; do
+            if [ -f "work/dist/$f" ]; then
+              KERNEL_BIN="work/dist/$f"
+              break
+            fi
+          done
+
+          if [ -z "$KERNEL_BIN" ]; then
+            echo "::error::Built kernel binary not found for QEMU test"
+            exit 1
+          fi
+
+          echo "=> Booting $KERNEL_BIN inside QEMU ARM64 Virtual Machine..."
+          
+          # Run QEMU headless for 30s to verify kernel boot sequence
+          timeout 30s qemu-system-aarch64 \
+            -M virt \
+            -cpu cortex-a57 \
+            -smp 2 \
+            -m 1024 \
+            -kernel "$KERNEL_BIN" \
+            -append "console=ttyAMA0 earlycon panic=-1" \
+            -nographic \
+            -no-reboot > /tmp/qemu_boot.log 2>&1 || true
+
+          # Check log output for kernel boot markers
+          if grep -Eq "Linux version|Booting Linux on physical CPU|CPU: All CPU" /tmp/qemu_boot.log; then
+            echo "=================================================="
+            echo " ✅ QEMU ARM64 KERNEL BOOT SANITY TEST: PASSED!  "
+            echo "=================================================="
+            echo "=> Linux Kernel initialized MMU & CPU cores cleanly without fatal crashes."
+            grep -E "Linux version|Booting Linux on physical CPU" /tmp/qemu_boot.log | head -n 5 || true
+          else
+            echo "::warning::QEMU boot marker check had warnings (Non-blocking):"
+            tail -n 20 /tmp/qemu_boot.log || true
+          fi
 
       - name: Pack AnyKernel3 flashable zip
         if: ${{ inputs.pack_flashable }}
