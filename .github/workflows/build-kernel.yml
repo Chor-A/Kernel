@@ -10,6 +10,10 @@ name: build-kernel
         description: 'Release tag (auto-generated as kernel-YYYYMMDD when empty)'
         required: false
         default: ""
+      stock_boot_url:
+        description: 'Stock boot.img Direct URL (Optional: Leave empty to skip boot.img repack)'
+        required: false
+        default: ""
       kernel_repo:
         description: 'Kernel source repository (full URL or scp-style remote)'
         required: false
@@ -67,6 +71,7 @@ jobs:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
       KERNEL_COMMIT: ${{ inputs.kernel_commit }}
+      STOCK_BOOT_URL: ${{ inputs.stock_boot_url }}
       CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst"}')[inputs.clang_version] }}
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
@@ -91,7 +96,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --reinstall -y \
             build-essential libelf-dev libssl-dev bison flex bc \
-            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch zip dos2unix
+            rsync dwarves coreutils pahole libncurses-dev zlib1g-dev pkg-config cmake gcc libdw-dev patch zip dos2unix curl python3-pip
 
       - name: Build and Install Pahole v1.31 from Source (User BTF Fix) 🛠️
         run: |
@@ -225,7 +230,7 @@ jobs:
           -  check_feat := 0
           -endif
           -endif
-          -
+           
           -ifeq ($(check_feat),1)
           -ifeq ($(FEATURES_DUMP),)
           -include $(srctree)/tools/build/Makefile.feature
@@ -539,13 +544,109 @@ jobs:
           cd ..
           echo "=> AnyKernel3 zip created: work/pkg/cloudfox-kernel-anykernel3.zip"
 
-      - name: Upload flashable zip
-        if: ${{ inputs.pack_flashable && !inputs.publish_release }}
-        uses: actions/upload-artifact@v5
+      - name: Repack & AVB-Sign Boot Image with Built GKI Kernel 📦
+        if: ${{ inputs.stock_boot_url != '' }}
+        run: |
+          set -euo pipefail
+          echo "========================================="
+          echo " 🚀 REPACKING & AVB SIGNING BOOT.IMG     "
+          echo "========================================="
+
+          # 1. Download Stock Boot Image using Dynamic URL
+          echo "=> Downloading Stock boot.img from: ${{ env.STOCK_BOOT_URL }}"
+          curl -sSL -o /tmp/stock_boot.img "${{ env.STOCK_BOOT_URL }}"
+
+          ORIG_SIZE=$(stat -c%s /tmp/stock_boot.img)
+          echo "Stock Boot Image Size: $ORIG_SIZE bytes"
+
+          # 2. Clone Google AOSP mkbootimg & AVB tools
+          echo "=> Fetching AOSP mkbootimg and AVB tools..."
+          rm -rf /tmp/mkbootimg_tools /tmp/avb_tools
+          git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg_tools
+          git clone --depth 1 https://android.googlesource.com/platform/external/avb /tmp/avb_tools
+
+          # 3. Extract Stock AVB Rollback Index (Anti-Rollback Protection)
+          ROLLBACK_INDEX=0
+          if python3 /tmp/avb_tools/avbtool.py info_image --image /tmp/stock_boot.img >/tmp/avb_info.txt 2>&1; then
+            DETECTED_INDEX=$(grep -i "Rollback Index:" /tmp/avb_info.txt | head -n 1 | awk '{print $NF}' || echo "0")
+            if [[ "$DETECTED_INDEX" =~ ^[0-9]+$ ]]; then
+              ROLLBACK_INDEX="$DETECTED_INDEX"
+            fi
+          fi
+          echo "=> Preserved Anti-Rollback Index: $ROLLBACK_INDEX"
+
+          # 4. Unpack Stock boot.img
+          mkdir -p /tmp/extracted_boot
+          python3 /tmp/mkbootimg_tools/unpack_bootimg.py \
+            --boot_img /tmp/stock_boot.img \
+            --out /tmp/extracted_boot
+
+          # 5. Find Built Kernel from work/dist
+          BUILT_KERNEL=""
+          for f in Image Image.gz Image.lz4 zImage; do
+            if [ -f "work/dist/$f" ]; then
+              BUILT_KERNEL="work/dist/$f"
+              break
+            fi
+          done
+
+          if [ -z "$BUILT_KERNEL" ]; then
+            echo "::error::Built kernel not found in work/dist"
+            exit 1
+          fi
+
+          echo "=> Replacing kernel with built GKI kernel: $BUILT_KERNEL"
+          cp -f "$BUILT_KERNEL" /tmp/extracted_boot/kernel
+
+          # 6. Repack with Header v4/v3 auto-detection (Safe Array Handling)
+          mkdir -p work/pkg
+          HEADER_VER=$(cat /tmp/extracted_boot/header_version 2>/dev/null || echo 4)
+          OS_VER=$(cat /tmp/extracted_boot/os_version 2>/dev/null || echo "12.0.0")
+          OS_PATCH=$(cat /tmp/extracted_boot/os_patch_level 2>/dev/null || echo "2022-01")
+
+          EXTRA_ARGS=()
+          [ -f /tmp/extracted_boot/dtb ] && EXTRA_ARGS+=("--dtb" "/tmp/extracted_boot/dtb")
+          [ -f /tmp/extracted_boot/recovery_dtbo ] && EXTRA_ARGS+=("--recovery_dtbo" "/tmp/extracted_boot/recovery_dtbo")
+          [ -f /tmp/extracted_boot/cmdline ] && EXTRA_ARGS+=("--cmdline" "$(cat /tmp/extracted_boot/cmdline)")
+
+          python3 /tmp/mkbootimg_tools/mkbootimg.py \
+            --kernel /tmp/extracted_boot/kernel \
+            --ramdisk /tmp/extracted_boot/ramdisk \
+            --header_version "$HEADER_VER" \
+            --os_version "$OS_VER" \
+            --os_patch_level "$OS_PATCH" \
+            "${EXTRA_ARGS[@]}" \
+            -o work/pkg/boot-gki.img
+
+          echo "✅ Basic Repack complete."
+
+          # 7. AVB 2.0 Signing with Rollback Protection
+          echo "=> Injecting AVB 2.0 Hash Footer with Rollback Index ($ROLLBACK_INDEX)..."
+          TEST_KEY="/tmp/avb_tools/test/data/testkey_rsa2048.pem"
+          
+          python3 /tmp/avb_tools/avbtool.py add_hash_footer \
+            --image work/pkg/boot-gki.img \
+            --partition_name boot \
+            --partition_size "$ORIG_SIZE" \
+            --key "$TEST_KEY" \
+            --algorithm SHA256_RSA2048 \
+            --rollback_index "$ROLLBACK_INDEX"
+
+          echo "=> Verifying AVB 2.0 Signature on boot-gki.img:"
+          python3 /tmp/avb_tools/avbtool.py info_image --image work/pkg/boot-gki.img
+
+          echo "✅ AVB Signed Boot Image Ready: work/pkg/boot-gki.img"
+          ls -lh work/pkg/boot-gki.img
+
+      - name: Upload Artifacts
+        if: ${{ !inputs.publish_release }}
+        uses: actions/upload-artifact@v4
         with:
-          name: kernel-anykernel3-zip
-          path: work/pkg/cloudfox-kernel-anykernel3.zip
-          if-no-files-found: warn
+          name: cloudfox-kernel-build
+          path: |
+            work/pkg/cloudfox-kernel-anykernel3.zip
+            work/pkg/boot-gki.img
+          if-no-files-found: ignore
 
       - name: Publish release
         if: ${{ inputs.publish_release }}
@@ -567,6 +668,9 @@ jobs:
           assets+=("$pkg/kernel-dist.tar.zst")
           if [ -f "$pkg/cloudfox-kernel-anykernel3.zip" ]; then
             assets+=("$pkg/cloudfox-kernel-anykernel3.zip")
+          fi
+          if [ -f "$pkg/boot-gki.img" ]; then
+            assets+=("$pkg/boot-gki.img")
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" --clobber "${assets[@]}"
