@@ -366,34 +366,14 @@ jobs:
           patch -p1 -N < /tmp/btf_fixes.patch || echo "=> Patches already applied or skipped"
 
           # -------------------------------------------------------------
-          # 4. KernelSU-Next & SusFS Integration
-          # -------------------------------------------------------------
-          rm -rf fs/kernelsu drivers/kernelsu KernelSU /tmp/KSUN || true
-          git clone --depth 1 https://github.com/rifsxd/KernelSU-Next.git /tmp/KSUN
-          mkdir -p drivers/kernelsu
-          cp -rf /tmp/KSUN/* drivers/kernelsu/
-          rm -rf /tmp/KSUN
-
-          if [ ! -d "fs/susfs" ]; then
-              echo "=> Cloning SusFS4KSU (branch: gki-android12-5.10)..."
-              git clone --depth 1 --branch gki-android12-5.10 \
-                https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
-              if [ -d "/tmp/susfs/kernel_patches" ]; then
-                  cp -r /tmp/susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
-                  cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
-              fi
-              rm -rf /tmp/susfs
-          fi
-
-          # -------------------------------------------------------------
-          # 5. FORCE PAHOLE INTO HERMETIC PATH FOR BTF
+          # 4. FORCE PAHOLE INTO HERMETIC PATH FOR BTF
           # -------------------------------------------------------------
           echo "=> Bypassing Google's hermetic PATH to inject Pahole v1.31..."
           cp /usr/local/bin/pahole ../build/build-tools/path/linux-x86/pahole || true
           chmod +x ../build/build-tools/path/linux-x86/pahole || true
 
           # -------------------------------------------------------------
-          # 6. Master Config Injector
+          # 5. Master Config Injector
           # -------------------------------------------------------------
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
