@@ -166,7 +166,7 @@ jobs:
           set -e
 
           # -------------------------------------------------------------
-          # 2. APPLY CLEANED UPLOADED PATCH FILES DIRECTLY (WITH AUTO-FIXER)
+          # 2. APPLY CLEANED UPLOADED PATCH FILES DIRECTLY
           # -------------------------------------------------------------
           echo "=> Checking for custom patches in 'kernel_patches' folder..."
           PATCH_DIR="${GITHUB_WORKSPACE}/.github/workflows/kernel_patches"
@@ -183,73 +183,8 @@ jobs:
                   if patch -p1 --no-backup-if-mismatch < "$patch_file"; then
                       echo "✅ Successfully applied $patch_name"
                   else
-                      if [[ "$patch_name" == *"06-fuse-bpf"* ]]; then
-                          echo "⚠️ FUSE-BPF patch had rejects. Running God-Tier Auto-Fixer..."
-                          
-                          # 1. fuse.h
-                          sed -i '/#endif \/\* _LINUX_FUSE_H \*\//d' include/uapi/linux/fuse.h
-                          cat << 'H_EOF' >> include/uapi/linux/fuse.h
-          struct fuse_bpf_in_arg { uint32_t size; const void *value; const void *end_offset; };
-          struct fuse_bpf_arg { uint32_t size; void *value; void *end_offset; };
-          #define FUSE_MAX_IN_ARGS 5
-          #define FUSE_MAX_OUT_ARGS 3
-          #define FUSE_BPF_FORCE (1 << 0)
-          #define FUSE_BPF_OUT_ARGVAR (1 << 6)
-          struct fuse_bpf_args { uint64_t nodeid; uint32_t opcode; uint32_t error_in; uint32_t in_numargs; uint32_t out_numargs; uint32_t flags; struct fuse_bpf_in_arg in_args[FUSE_MAX_IN_ARGS]; struct fuse_bpf_arg out_args[FUSE_MAX_OUT_ARGS]; };
-          #define FUSE_BPF_USER_FILTER    1
-          #define FUSE_BPF_BACKING        2
-          #define FUSE_BPF_POST_FILTER    4
-          #define FUSE_OPCODE_FILTER      0x0ffff
-          #define FUSE_PREFILTER          0x10000
-          #define FUSE_POSTFILTER         0x20000
-          #endif /* _LINUX_FUSE_H */
-          H_EOF
-                          
-                          # 2. file.c
-                          sed -i 's/fuse_file_put(ff, false, isdir);/fuse_file_put(ra->inode, ff, ff->fm->fc->destroy, isdir);/g' fs/fuse/file.c
-                          
-                          # 3. readdir.c
-                          sed -i 's/int fuse_parse_dirfile(char \*buf, size_t nbytes, struct file \*file,/static int parse_dirfile(char \*buf, size_t nbytes, struct file \*file,/g' fs/fuse/readdir.c
-                          sed -i 's/res = fuse_parse_dirfile(page_address(page), res, file,/res = parse_dirfile(page_address(page), res, file,/g' fs/fuse/readdir.c
-                          sed -i 's/&force_again, &allow_force);/\&force_again, \&allow_force, is_continued);/g' fs/fuse/readdir.c
-                          sed -i 's/bool force_again, allow_force;/bool allow_force;\n\tbool force_again = false;\n\tbool is_continued = false;/g' fs/fuse/readdir.c
-                          sed -i 's/if (force_again && !IS_ERR(fer.result)) \+goto again;/if (force_again \&\& !IS_ERR(fer.result)) {\n\t\tis_continued = true;\n\t\tgoto again;\n\t}/g' fs/fuse/readdir.c
-                          
-                          # 4. fuse_i.h
-                          sed -i '/int fuse_parse_dirfile/d' fs/fuse/fuse_i.h
-                          sed -i 's/uint32_t opcode;/uint32_t opcode;\n\tuint32_t error_in;/g' fs/fuse/fuse_i.h
-                          sed -i 's/struct fuse_in_arg in_args\[3\];/struct fuse_in_arg in_args\[FUSE_MAX_IN_ARGS\];/g' fs/fuse/fuse_i.h
-                          sed -i 's/struct fuse_arg out_args\[2\];/struct fuse_arg out_args\[FUSE_MAX_OUT_ARGS\];/g' fs/fuse/fuse_i.h
-                          sed -i 's/int force:1;/bool force:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int noreply:1;/bool noreply:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int nocreds:1;/bool nocreds:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int in_pages:1;/bool in_pages:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int out_pages:1;/bool out_pages:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int user_pages:1;/bool user_pages:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int out_argvar:1;/bool out_argvar:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int page_zeroing:1;/bool page_zeroing:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int page_replace:1;/bool page_replace:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int may_block:1;/bool may_block:1;/g' fs/fuse/fuse_i.h
-                          sed -i 's/int fuse_readdir_initialize(struct fuse_args \*fa,/int fuse_readdir_initialize(struct fuse_bpf_args \*fa,/g' fs/fuse/fuse_i.h
-                          sed -i 's/int fuse_readdir_backing(struct fuse_args \*fa,/int fuse_readdir_backing(struct fuse_bpf_args \*fa,/g' fs/fuse/fuse_i.h
-                          sed -i 's/void \*fuse_readdir_finalize(struct fuse_args \*fa,/void \*fuse_readdir_finalize(struct fuse_bpf_args \*fa,/g' fs/fuse/fuse_i.h
-                          sed -i 's/int fuse_access_initialize(struct fuse_args \*fa,/int fuse_access_initialize(struct fuse_bpf_args \*fa,/g' fs/fuse/fuse_i.h
-                          sed -i 's/int fuse_access_backing(struct fuse_args \*fa,/int fuse_access_backing(struct fuse_bpf_args \*fa,/g' fs/fuse/fuse_i.h
-                          sed -i 's/void \*fuse_access_finalize(struct fuse_args \*fa,/void \*fuse_access_finalize(struct fuse_bpf_args \*fa,/g' fs/fuse/fuse_i.h
-                          sed -i 's/bool \*allow_force);/bool \*allow_force, bool is_continued);/g' fs/fuse/fuse_i.h
-                          
-                          cat << 'I_EOF' >> fs/fuse/fuse_i.h
-          struct fuse_read_out { bool again; uint64_t offset; };
-          static inline u64 attr_timeout(struct fuse_entry_out *o) { return o->attr_valid * 1000000000 + o->attr_valid_nsec; }
-          void fuse_fillattr(struct inode *inode, struct fuse_attr *attr, struct kstat *stat);
-          I_EOF
-                          
-                          rm -f fs/fuse/*.rej fs/fuse/*.orig include/uapi/linux/*.rej include/uapi/linux/*.orig
-                          echo "✅ Auto-Fixer completed successfully!"
-                      else
-                          echo "❌ ERROR: $patch_name failed to apply!"
-                          exit 1
-                      fi
+                      echo "❌ ERROR: $patch_name failed to apply!"
+                      exit 1
                   fi
                   echo "======================================================="
               done
@@ -266,174 +201,13 @@ jobs:
           fi
 
           # -------------------------------------------------------------
-          # 3. FIX BTF C-CODE PATCHES
+          # 3. FIX BTF C-CODE PATCHES (SAFE SED WAY, NO PATCH FILE)
           # -------------------------------------------------------------
           echo "=> Applying Android 12-5.10 BTF source patches..."
-          cat << 'PATCH_EOF' > /tmp/btf_fixes.patch
-          --- a/include/linux/android_kabi.h
-          +++ b/include/linux/android_kabi.h
-          @@ -63,7 +63,7 @@
-            _new;						\
-            struct {					\
-            	_orig;					\
-          -		} __UNIQUE_ID(android_kabi_hide);		\
-          +		};						\
-            __ANDROID_KABI_CHECK_SIZE_ALIGN(_orig, _new);	\
-            }
-          --- a/tools/lib/bpf/Makefile
-          +++ b/tools/lib/bpf/Makefile
-          @@ -59,28 +59,7 @@
-            VERBOSE = 0
-           endif
-           
-          -FEATURE_USER = .libbpf
-          -FEATURE_TESTS = libelf zlib bpf
-          -FEATURE_DISPLAY = libelf zlib bpf
-          -
-           INCLUDES = -I. -I$(srctree)/tools/include -I$(srctree)/tools/include/uapi
-          -FEATURE_CHECK_CFLAGS-bpf = $(INCLUDES)
-          -
-          -check_feat := 1
-          -NON_CHECK_FEAT_TARGETS := clean TAGS tags cscope help
-          -ifdef MAKECMDGOALS
-          -ifeq ($(filter-out $(NON_CHECK_FEAT_TARGETS),$(MAKECMDGOALS)),)
-          -  check_feat := 0
-          -endif
-          -endif
-           
-          -ifeq ($(check_feat),1)
-          -ifeq ($(FEATURES_DUMP),)
-          -include $(srctree)/tools/build/Makefile.feature
-          -else
-          -include $(FEATURES_DUMP)
-          -endif
-          -endif
-           
-           export prefix libdir src obj
-           
-          @@ -157,7 +136,7 @@
-           
-           all_cmd: $(CMD_TARGETS) check
-           
-          -$(BPF_IN_SHARED): force elfdep zdep bpfdep $(BPF_HELPER_DEFS)
-          +$(BPF_IN_SHARED): force $(BPF_HELPER_DEFS)
-           	@(test -f ../../include/uapi/linux/bpf.h -a -f ../../../include/uapi/linux/bpf.h && ( \
-           	(diff -B ../../include/uapi/linux/bpf.h ../../../include/uapi/linux/bpf.h >/dev/null) || \
-           	echo "Warning: Kernel ABI header at 'tools/include/uapi/linux/bpf.h' differs from latest version at 'include/uapi/linux/bpf.h'" >&2 )) || true
-          @@ -175,7 +154,7 @@
-           	echo "Warning: Kernel ABI header at 'tools/include/uapi/linux/if_xdp.h' differs from latest version at 'include/uapi/linux/if_xdp.h'" >&2 )) || true
-           	$(Q)$(MAKE) $(build)=libbpf OUTPUT=$(SHARED_OBJDIR) CFLAGS="$(CFLAGS) $(SHLIB_FLAGS)"
-           
-          -$(BPF_IN_STATIC): force elfdep zdep bpfdep $(BPF_HELPER_DEFS)
-          +$(BPF_IN_STATIC): force $(BPF_HELPER_DEFS)
-           	$(Q)$(MAKE) $(build)=libbpf OUTPUT=$(STATIC_OBJDIR)
-           
-           $(BPF_HELPER_DEFS): $(srctree)/tools/include/uapi/linux/bpf.h
-          @@ -264,34 +243,16 @@
-           
-           install: install_lib install_pkgconfig install_headers
-           
-          -### Cleaning rules
-          -
-          -config-clean:
-          -	$(call QUIET_CLEAN, feature-detect)
-          -	$(Q)$(MAKE) -C $(srctree)/tools/build/feature/ clean >/dev/null
-          -
-          -clean: config-clean
-          +clean:
-           	$(call QUIET_CLEAN, libbpf) $(RM) -rf $(CMD_TARGETS)		     \
-           		*~ .*.d .*.cmd LIBBPF-CFLAGS $(BPF_HELPER_DEFS)		     \
-           		$(SHARED_OBJDIR) $(STATIC_OBJDIR)			     \
-           		$(addprefix $(OUTPUT),					     \
-           			    *.o *.a *.so *.so.$(LIBBPF_MAJOR_VERSION) *.pc)
-          -	$(call QUIET_CLEAN, core-gen) $(RM) $(OUTPUT)FEATURE-DUMP.libbpf
-          -
-          -
-           
-          -PHONY += force elfdep zdep bpfdep cscope tags
-          +PHONY += force cscope tags
-           force:
-           
-          -elfdep:
-          -	@if [ "$(feature-libelf)" != "1" ]; then echo "No libelf found"; exit 1 ; fi
-          -
-          -zdep:
-          -	@if [ "$(feature-zlib)" != "1" ]; then echo "No zlib found"; exit 1 ; fi
-          -
-          -bpfdep:
-          -	@if [ "$(feature-bpf)" != "1" ]; then echo "BPF API too old"; exit 1 ; fi
-          -
-           cscope:
-           	ls *.c *.h > cscope.files
-           	cscope -b -q -I $(srctree)/include -f cscope.out
-          --- a/tools/bpf/resolve_btfids/Makefile
-          +++ b/tools/bpf/resolve_btfids/Makefile
-          @@ -23,6 +23,8 @@
-           LD       = $(HOSTLD)
-           ARCH     = $(HOSTARCH)
-           RM      ?= rm
-          +CFLAGS  := $(KBUILD_HOSTCFLAGS)
-          +LDFLAGS := $(KBUILD_HOSTLDFLAGS)
-           
-           OUTPUT ?= $(srctree)/tools/bpf/resolve_btfids/
-           
-          @@ -45,13 +47,15 @@
-           	$(Q)$(MAKE) -C $(SUBCMD_SRC) OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
-           
-           $(BPFOBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
-          -	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ $(abspath $@)
-          +	$(Q)$(MAKE) $(submake_extras) -C $(LIBBPF_SRC)  OUTPUT=$(abspath $(dir $@))/ \
-          +		EXTRA_CFLAGS="$(CFLAGS)" $(abspath $@)
-           
-          -CFLAGS := -g \
-          +CFLAGS += -g \
-                      -I$(srctree)/tools/include \
-                      -I$(srctree)/tools/include/uapi \
-                      -I$(LIBBPF_SRC) \
-          -          -I$(SUBCMD_SRC)
-          +          -I$(SUBCMD_SRC) \
-          +          -std=gnu11
-           
-           LIBS = -lelf -lz
-           
-          --- a/net/core/xdp.c
-          +++ b/net/core/xdp.c
-          @@ -12,6 +12,7 @@
-           #include <linux/idr.h>
-           #include <linux/rhashtable.h>
-           #include <linux/bug.h>
-          +#include <linux/btf.h>
-           #include <net/page_pool.h>
-           
-           #include <net/xdp.h>
-          @@ -387,6 +388,13 @@
-           void xdp_return_buff(struct xdp_buff *xdp)
-           {
-           	__xdp_return(xdp->data, &xdp->rxq->mem, true, xdp);
-          +	/* xdp_buff is referenced via BTF_ID_LIST_SINGLE(bpf_xdp_output_btf_ids)
-          +	 * in net/core/filter.c but is not otherwise emitted into vmlinux BTF,
-          +	 * so resolve_btfids aborts with "unresolved symbol xdp_buff". Force BTF
-          +	 * emission here where the struct is complete (this file includes both
-          +	 * <net/xdp.h> for the type and <linux/btf.h> for BTF_TYPE_EMIT). */
-          +	BTF_TYPE_EMIT(struct xdp_buff);
-          +
-           }
-           
-           /* Only called for MEM_TYPE_PAGE_POOL see xdp.h */
-          --- a/tools/bpf/resolve_btfids/main.c
-          +++ b/tools/bpf/resolve_btfids/main.c
-          @@ -649,6 +649,9 @@ static int symbols_patch(struct object *obj)
-           	if (sets_patch(obj))
-           		return -1;
-           
-          +	/* Set type to ensure endian translation occurs. */
-          +	obj->efile.idlist->d_type = ELF_T_WORD;
-          +
-           	elf_flagdata(obj->efile.idlist, ELF_C_SET, ELF_F_DIRTY);
-           
-           	err = elf_update(obj->efile.elf, ELF_C_WRITE);
-          PATCH_EOF
-          patch -p1 -N < /tmp/btf_fixes.patch || echo "=> Patches already applied or skipped"
+          sed -i 's/} __UNIQUE_ID(android_kabi_hide);/};/g' include/linux/android_kabi.h || true
+          sed -i '/__xdp_return(xdp->data, &xdp->rxq->mem, true, xdp);/a \
+          \tBTF_TYPE_EMIT(struct xdp_buff);' net/core/xdp.c || true
+          sed -i 's/elf_flagdata(obj->efile.idlist, ELF_C_SET, ELF_F_DIRTY);/obj->efile.idlist->d_type = ELF_T_WORD;\n\telf_flagdata(obj->efile.idlist, ELF_C_SET, ELF_F_DIRTY);/g' tools/bpf/resolve_btfids/main.c || true
 
           # -------------------------------------------------------------
           # 4. FORCE PAHOLE INTO HERMETIC PATH FOR BTF
@@ -474,9 +248,6 @@ jobs:
 
           # --- STEAMBOT12 CHERRY-PICK TWEAKS ---
           inject "" "CONFIG_NTSYNC=y\nCONFIG_NOMOUNT=y\nCONFIG_WORKINGSET_PROTECTION=y"
-
-          # --- FUSE-BPF TWEAKS ---
-          inject "" "CONFIG_FUSE_FS=y\nCONFIG_FUSE_BPF=y"
 
           # --- LZ4KDR (user confirmed working) ---
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
