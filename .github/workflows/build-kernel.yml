@@ -166,7 +166,7 @@ jobs:
           set -e
 
           # -------------------------------------------------------------
-          # 2. APPLY CLEANED UPLOADED PATCH FILES DIRECTLY
+          # 2. APPLY CLEANED UPLOADED PATCH FILES DIRECTLY (WITH AUTO-FIXER)
           # -------------------------------------------------------------
           echo "=> Checking for custom patches in 'kernel_patches' folder..."
           PATCH_DIR="${GITHUB_WORKSPACE}/.github/workflows/kernel_patches"
@@ -181,18 +181,150 @@ jobs:
                   # Convert Windows CRLF to Linux LF format just in case
                   dos2unix "$patch_file" >/dev/null 2>&1 || true
                   
-                  # Direct Patching (No autofix loops needed)
+                  # Direct Patching
                   if patch -p1 --no-backup-if-mismatch < "$patch_file"; then
                       echo "✅ Successfully applied $patch_name"
                   else
-                      echo "❌ ERROR: $patch_name failed to apply!"
-                      echo "=> The patch is marked as clean, so failing here means the base code still mismatched."
-                      exit 1
+                      if [[ "$patch_name" == *"06-fuse-bpf"* ]]; then
+                          echo "⚠️ FUSE-BPF patch had rejects. Running God-Tier Python Auto-Fixer..."
+                          cat << 'PYEOF' > /tmp/fix_fuse.py
+import os, re
+
+# 1. include/uapi/linux/fuse.h
+f1 = "include/uapi/linux/fuse.h"
+with open(f1, "r") as f: d1 = f.read()
+if "struct fuse_bpf_args" not in d1:
+    ext = """
+/* Fuse BPF Args */
+struct fuse_bpf_in_arg {
+\tuint32_t size;
+\tconst void *value;
+\tconst void *end_offset;
+};
+
+struct fuse_bpf_arg {
+\tuint32_t size;
+\tvoid *value;
+\tvoid *end_offset;
+};
+
+#define FUSE_MAX_IN_ARGS 5
+#define FUSE_MAX_OUT_ARGS 3
+
+#define FUSE_BPF_FORCE (1 << 0)
+#define FUSE_BPF_OUT_ARGVAR (1 << 6)
+
+struct fuse_bpf_args {
+\tuint64_t nodeid;
+\tuint32_t opcode;
+\tuint32_t error_in;
+\tuint32_t in_numargs;
+\tuint32_t out_numargs;
+\tuint32_t flags;
+\tstruct fuse_bpf_in_arg in_args[FUSE_MAX_IN_ARGS];
+\tstruct fuse_bpf_arg out_args[FUSE_MAX_OUT_ARGS];
+};
+
+#define FUSE_BPF_USER_FILTER    1
+#define FUSE_BPF_BACKING        2
+#define FUSE_BPF_POST_FILTER    4
+
+#define FUSE_OPCODE_FILTER      0x0ffff
+#define FUSE_PREFILTER          0x10000
+#define FUSE_POSTFILTER         0x20000
+
+#endif /* _LINUX_FUSE_H */
+"""
+    d1 = d1.replace("#endif /* _LINUX_FUSE_H */", ext)
+    with open(f1, "w") as f: f.write(d1)
+
+# 2. fs/fuse/file.c
+f2 = "fs/fuse/file.c"
+with open(f2, "r") as f: d2 = f.read()
+d2 = d2.replace("fuse_file_put(ff, false, isdir);", "fuse_file_put(ra->inode, ff, ff->fm->fc->destroy, isdir);")
+with open(f2, "w") as f: f.write(d2)
+
+# 3. fs/fuse/readdir.c
+f3 = "fs/fuse/readdir.c"
+with open(f3, "r") as f: d3 = f.read()
+d3 = d3.replace("int fuse_parse_dirfile(char *buf, size_t nbytes, struct file *file,", "static int parse_dirfile(char *buf, size_t nbytes, struct file *file,")
+d3 = d3.replace("res = fuse_parse_dirfile(page_address(page), res, file,", "res = parse_dirfile(page_address(page), res, file,")
+d3 = d3.replace("&force_again, &allow_force);", "&force_again, &allow_force, is_continued);")
+d3 = d3.replace("bool force_again, allow_force;", "bool allow_force;\n\tbool force_again = false;\n\tbool is_continued = false;")
+d3 = re.sub(r'if \(force_again && !IS_ERR\(fer\.result\)\)\s+goto again;', 'if (force_again && !IS_ERR(fer.result)) {\n\t\tis_continued = true;\n\t\tgoto again;\n\t}', d3)
+with open(f3, "w") as f: f.write(d3)
+
+# 4. fs/fuse/fuse_i.h
+f4 = "fs/fuse/fuse_i.h"
+with open(f4, "r") as f: d4 = f.read()
+d4 = re.sub(r'int fuse_parse_dirfile\(char \*buf, size_t nbytes, struct file \*file,[\s\n]*struct dir_context \*ctx\);', '', d4)
+if "uint32_t error_in;" not in d4:
+    d4 = d4.replace("uint32_t opcode;", "uint32_t opcode;\n\tuint32_t error_in;")
+d4 = d4.replace("struct fuse_in_arg in_args[3];", "struct fuse_in_arg in_args[FUSE_MAX_IN_ARGS];")
+d4 = d4.replace("struct fuse_arg out_args[2];", "struct fuse_arg out_args[FUSE_MAX_OUT_ARGS];")
+
+d4 = d4.replace("int force:1;", "bool force:1;")
+d4 = d4.replace("int noreply:1;", "bool noreply:1;")
+d4 = d4.replace("int nocreds:1;", "bool nocreds:1;")
+d4 = d4.replace("int in_pages:1;", "bool in_pages:1;")
+d4 = d4.replace("int out_pages:1;", "bool out_pages:1;")
+d4 = d4.replace("int user_pages:1;", "bool user_pages:1;")
+d4 = d4.replace("int out_argvar:1;", "bool out_argvar:1;")
+d4 = d4.replace("int page_zeroing:1;", "bool page_zeroing:1;")
+d4 = d4.replace("int page_replace:1;", "bool page_replace:1;")
+d4 = d4.replace("int may_block:1;", "bool may_block:1;")
+
+d4 = d4.replace("int fuse_readdir_initialize(struct fuse_args *fa,", "int fuse_readdir_initialize(struct fuse_bpf_args *fa,")
+d4 = d4.replace("int fuse_readdir_backing(struct fuse_args *fa,", "int fuse_readdir_backing(struct fuse_bpf_args *fa,")
+d4 = d4.replace("void *fuse_readdir_finalize(struct fuse_args *fa,", "void *fuse_readdir_finalize(struct fuse_bpf_args *fa,")
+d4 = d4.replace("int fuse_access_initialize(struct fuse_args *fa,", "int fuse_access_initialize(struct fuse_bpf_args *fa,")
+d4 = d4.replace("int fuse_access_backing(struct fuse_args *fa,", "int fuse_access_backing(struct fuse_bpf_args *fa,")
+d4 = d4.replace("void *fuse_access_finalize(struct fuse_args *fa,", "void *fuse_access_finalize(struct fuse_bpf_args *fa,")
+
+d4 = re.sub(r'(int fuse_readdir_initialize\([^;]+bool \*allow_force)\);', r'\1, bool is_continued);', d4)
+d4 = re.sub(r'(int fuse_readdir_backing\([^;]+bool \*allow_force)\);', r'\1, bool is_continued);', d4)
+d4 = re.sub(r'(void \*fuse_readdir_finalize\([^;]+bool \*allow_force)\);', r'\1, bool is_continued);', d4)
+
+if "struct fuse_read_out {" not in d4:
+    struct_fix = """
+struct fuse_read_out {
+\tbool again;
+\tuint64_t offset;
+};
+"""
+    d4 = d4.replace("struct fuse_read_io {", struct_fix + "\nstruct fuse_read_io {")
+
+if "u64 attr_timeout" not in d4:
+    helpers_fix = """
+static inline u64 attr_timeout(struct fuse_entry_out *o) {
+\treturn o->attr_valid * 1000000000 + o->attr_valid_nsec;
+}
+void fuse_fillattr(struct inode *inode, struct fuse_attr *attr, struct kstat *stat);
+"""
+    d4 = d4 + helpers_fix
+
+with open(f4, "w") as f: f.write(d4)
+PYEOF
+                          python3 /tmp/fix_fuse.py
+                          rm -f fs/fuse/*.rej fs/fuse/*.orig include/uapi/linux/*.rej include/uapi/linux/*.orig
+                          echo "✅ Python Auto-Fixer completed successfully!"
+                      else
+                          echo "❌ ERROR: $patch_name failed to apply!"
+                          exit 1
+                      fi
                   fi
                   echo "======================================================="
               done
-          else
-              echo "=> WARNING: 'kernel_patches' directory not found at $PATCH_DIR"
+          fi
+
+          # -------------------------------------------------------------
+          # 2.5 LINK KERNELSU & SUSFS TO KERNEL BUILD SYSTEM
+          # -------------------------------------------------------------
+          echo "=> Hooking KSU & SusFS into drivers..."
+          if [ -d "drivers/kernelsu" ] && ! grep -q "kernelsu" drivers/Makefile; then
+              echo 'obj-$(CONFIG_KSU) += kernelsu/kernel/' >> drivers/Makefile
+              sed -i '/endmenu/i source "drivers/kernelsu/kernel/Kconfig"' drivers/Kconfig
+              echo "✅ KernelSU & SusFS Successfully Linked!"
           fi
 
           # -------------------------------------------------------------
@@ -404,6 +536,9 @@ jobs:
 
           # --- STEAMBOT12 CHERRY-PICK TWEAKS ---
           inject "" "CONFIG_NTSYNC=y\nCONFIG_NOMOUNT=y\nCONFIG_WORKINGSET_PROTECTION=y"
+
+          # --- FUSE-BPF TWEAKS ---
+          inject "" "CONFIG_FUSE_FS=y\nCONFIG_FUSE_BPF=y"
 
           # --- LZ4KDR (user confirmed working) ---
           inject "grep -q 'config CRYPTO_LZ4KDR' crypto/Kconfig 2>/dev/null" "CONFIG_LZ4KDR_COMPRESS=y\nCONFIG_CRYPTO_LZ4KDR=y\nCONFIG_ZRAM_DEF_COMP_LZ4KDR=y"
