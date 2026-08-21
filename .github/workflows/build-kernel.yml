@@ -200,13 +200,13 @@ jobs:
           rm -rf drivers/kernelsu
           git clone --depth 1 https://github.com/rifsxd/KernelSU-Next.git drivers/kernelsu
           
-          if ! grep -q "kernelsu" drivers/Makefile; then
-              echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-          fi
-          if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
-              sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          fi
-          echo "✅ Latest KernelSU-Next synced & linked to build system!"
+          # Clean previous entries if present to prevent duplicates
+          sed -i '/kernelsu/d' drivers/Kconfig drivers/Makefile 2>/dev/null || true
+
+          # Explicitly link drivers/kernelsu/kernel/ directory
+          sed -i '/endmenu/i source "drivers/kernelsu/kernel/Kconfig"' drivers/Kconfig
+          echo 'obj-$(CONFIG_KSU) += kernelsu/kernel/' >> drivers/Makefile
+          echo "✅ Latest KernelSU-Next synced & linked to build system cleanly!"
 
           # -------------------------------------------------------------
           # 3. FIX BTF C-CODE PATCHES (SAFE SED WAY)
