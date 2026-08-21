@@ -244,20 +244,8 @@ jobs:
                   echo "::warning::SusFS VFS patch applied with minor offsets/warnings (Normal)"
               }
           fi
-
-          # C) Apply SusFS Patch to KernelSU-Next
-          if [ -d "drivers/kernelsu" ]; then
-              SUSFS_KSU_PATCH=$(find /tmp/susfs_repo/kernel_patches/KernelSU* /tmp/susfs_repo/kernel_patches -name "*enable_susfs_for_ksu*.patch" 2>/dev/null | head -n 1)
-              if [ -n "$SUSFS_KSU_PATCH" ] && [ -f "$SUSFS_KSU_PATCH" ]; then
-                  echo "-> Applying SusFS Patch to KernelSU-Next: $(basename "$SUSFS_KSU_PATCH")..."
-                  dos2unix "$SUSFS_KSU_PATCH" >/dev/null 2>&1 || true
-                  cd drivers/kernelsu
-                  patch -p1 --no-backup-if-mismatch < "$SUSFS_KSU_PATCH" || true
-                  cd ../..
-              fi
-          fi
           rm -rf /tmp/susfs_repo
-          echo "✅ Latest SusFS synced & integrated successfully!"
+          echo "✅ Latest SusFS core & VFS patches applied successfully!"
 
           # -------------------------------------------------------------
           # 3. FIX BTF C-CODE PATCHES (SAFE SED WAY)
