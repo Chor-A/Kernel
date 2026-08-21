@@ -1,33 +1,8 @@
 diff --git a/fs/proc/array.c b/fs/proc/array.c
-index f5da74234..a8b7c6d5e 100644
+index f5da74234..6a91e931f 100644
 --- a/fs/proc/array.c
 +++ b/fs/proc/array.c
-@@ -60,6 +60,7 @@
- #include <linux/string.h>
- #include <linux/sched/task.h>
- #include <linux/sched/cputime.h>
-+#include <linux/cred.h>
- #include <linux/fs.h>
- #include <linux/proc_fs.h>
- #include <linux/ioport.h>
-@@ -165,10 +166,16 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
- 	struct task_struct *tracer;
- 	struct task_struct *p;
- 	int umask = -1;
-+	int state_idx = 0;
- 
- 	rcu_read_lock();
- 	p = pid_task(pid, PIDTYPE_PID);
- 	if (p) {
-+		state_idx = task_state_index(p);
-+		if (from_kuid(&init_user_ns, current_uid()) >= 10000) {
-+			if (state_idx == fls(__TASK_STOPPED) || state_idx == fls(__TASK_TRACED))
-+				state_idx = fls(TASK_INTERRUPTIBLE);
-+		}
- 		task_lock(p);
- 		tracer = ptrace_parent(p);
- 		if (tracer)
-@@ -179,10 +186,13 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
+@@ -179,6 +179,9 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
  	task_unlock(p);
  	rcu_read_unlock();
  
@@ -37,108 +12,11 @@ index f5da74234..a8b7c6d5e 100644
  	if (umask >= 0)
  		seq_printf(m, "Umask:\t%#04o\n", umask);
  	seq_puts(m, "State:\t");
--	seq_puts(m, task_state_array[task_state_index(p)]);
-+	seq_puts(m, task_state_array[state_idx]);
- 	seq_putc(m, '\n');
- 
- 	seq_printf(m,
-@@ -359,6 +369,11 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
- 	sigset_t sigign, sigcatch;
- 	char state;
- 
-+	state = *get_task_state(task);
-+	if (from_kuid(&init_user_ns, current_uid()) >= 10000) {
-+		if (state == 't' || state == 'T')
-+			state = 'S';
-+	}
- 	vsize = eip = esp = 0;
- 	permitted = ptrace_may_access(task, PTRACE_MODE_READ_FSCRED);
- 	mm = get_task_mm(task);
-@@ -400,6 +415,9 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
- 	else
- 		tracer = ptrace_parent(task);
- 
-+	if (tracer && from_kuid(&init_user_ns, current_uid()) >= 10000)
-+		tracer = NULL;
-+
- 	if (tracer)
- 		tpid = task_pid_nr_ns(tracer, ns);
- 
-diff --git a/fs/proc/bootconfig.c b/fs/proc/bootconfig.c
-index 28169e59d..c7e9a8123 100644
---- a/fs/proc/bootconfig.c
-+++ b/fs/proc/bootconfig.c
-@@ -1,5 +1,8 @@
- // SPDX-License-Identifier: GPL-2.0
-+#include <linux/cred.h>
- #include <linux/fs.h>
- #include <linux/init.h>
- #include <linux/proc_fs.h>
- #include <linux/seq_file.h>
-+#include <linux/slab.h>
-+#include <linux/string.h>
- #include <linux/bootconfig.h>
- 
- static int bootconfig_proc_show(struct seq_file *m, void *v)
- {
--	if (saved_boot_config)
--		seq_puts(m, saved_boot_config);
-+	char *copy, *p, *line;
-+
-+	if (!saved_boot_config)
-+		return 0;
-+
-+	if (from_kuid(&init_user_ns, current_uid()) < 10000) {
-+		seq_puts(m, saved_boot_config);
-+		return 0;
-+	}
-+
-+	copy = kstrdup(saved_boot_config, GFP_KERNEL);
-+	if (!copy) {
-+		seq_putc(m, '\n');
-+		return 0;
-+	}
-+
-+	p = copy;
-+	while ((line = strsep(&p, "\n")) != NULL) {
-+		if (*line == '\0')
-+			continue;
-+
-+		if (strstr(line, "androidboot.verifiedbootstate") &&
-+		    (strstr(line, "orange") || strstr(line, "yellow")))
-+			seq_puts(m, "androidboot.verifiedbootstate = \"green\"");
-+		else if (strstr(line, "androidboot.vbmeta.device_state") && strstr(line, "unlocked"))
-+			seq_puts(m, "androidboot.vbmeta.device_state = \"locked\"");
-+		else if (strstr(line, "androidboot.flash.locked") && strstr(line, "\"0\""))
-+			seq_puts(m, "androidboot.flash.locked = \"1\"");
-+		else if (strstr(line, "androidboot.selinux") && strstr(line, "permissive"))
-+			seq_puts(m, "androidboot.selinux = \"enforcing\"");
-+		else if (strstr(line, "androidboot.secureboot") && strstr(line, "\"0\""))
-+			seq_puts(m, "androidboot.secureboot = \"1\"");
-+		else if (strstr(line, "androidboot.secureboot.lockstate") && strstr(line, "unlocked"))
-+			seq_puts(m, "androidboot.secureboot.lockstate = \"locked\"");
-+		else if (strstr(line, "androidboot.realme.lockstate") && strstr(line, "\"0\""))
-+			seq_puts(m, "androidboot.realme.lockstate = \"1\"");
-+		else if (strstr(line, "androidboot.realme.lockstate") && strstr(line, "unlocked"))
-+			seq_puts(m, "androidboot.realme.lockstate = \"locked\"");
-+		else if (strstr(line, "androidboot.lockstate") && strstr(line, "unlocked"))
-+			seq_puts(m, "androidboot.lockstate = \"locked\"");
-+		else if (strstr(line, "androidboot.mode") && strstr(line, "custom"))
-+			seq_puts(m, "androidboot.mode = \"normal\"");
-+		else
-+			seq_puts(m, line);
-+
-+		seq_putc(m, '\n');
-+	}
-+
-+	kfree(copy);
- 	return 0;
- }
 diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
-index fa762c5fb..9e8d7c6b5 100644
+index fa762c5fb..8a1e53fc2 100644
 --- a/fs/proc/cmdline.c
 +++ b/fs/proc/cmdline.c
-@@ -1,5 +1,7 @@
+@@ -1,12 +1,69 @@
  // SPDX-License-Identifier: GPL-2.0
 +#include <linux/cred.h>
  #include <linux/fs.h>
@@ -146,7 +24,7 @@ index fa762c5fb..9e8d7c6b5 100644
  #include <linux/proc_fs.h>
  #include <linux/seq_file.h>
 +#include <linux/string.h>
- 
++
 +static void sanitize_and_print_token(struct seq_file *m, const char *token, size_t len)
 +{
 +#define MATCH_PREFIX(prefix) (len >= (sizeof(prefix) - 1) && strncmp(token, prefix, sizeof(prefix) - 1) == 0)
@@ -176,7 +54,7 @@ index fa762c5fb..9e8d7c6b5 100644
 +
 +#undef MATCH_PREFIX
 +}
-+
+ 
  static int cmdline_proc_show(struct seq_file *m, void *v)
  {
 -	seq_puts(m, saved_command_line);
@@ -195,7 +73,6 @@ index fa762c5fb..9e8d7c6b5 100644
 +
 +	p = saved_command_line;
 +	while (*p) {
-+		/* Preserve original whitespace (spaces, tabs, newlines) verbatim */
 +		if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
 +			seq_putc(m, *p);
 +			p++;
@@ -210,23 +87,27 @@ index fa762c5fb..9e8d7c6b5 100644
  	seq_putc(m, '\n');
  	return 0;
  }
-diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
-index 7415f49a3..521ea41b2 100644
---- a/security/selinux/selinuxfs.c
-+++ b/security/selinux/selinuxfs.c
-@@ -1,5 +1,6 @@
- // SPDX-License-Identifier: GPL-2.0-only
-+#include <linux/cred.h>
- #include <linux/init.h>
- #include <linux/pagemap.h>
- #include <linux/slab.h>
-@@ -179,6 +180,9 @@ static ssize_t sel_read_enforce(struct file *filp, char __user *buf,
- 	char tmpbuf[TMPBUFLEN];
- 	ssize_t length;
+diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
+index 126d4433d..fb02d5951 100644
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -756,6 +756,9 @@ static int kallsyms_open(struct inode *inode, struct file *file)
+ 		return -ENOMEM;
+ 	reset_iter(iter, 0);
  
 +	if (from_kuid(&init_user_ns, current_uid()) >= 10000)
-+		return simple_read_from_buffer(buf, count, ppos, "1", 1);
++		return -ENOENT;
 +
- 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d", enforcing_enabled());
- 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
- }
+ 	/*
+ 	 * Instead of checking this on every s_show() call, cache
+ 	 * the result here at open time.
+diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
+index 7415f49a3..49973e1a4 100644
+--- a/security/selinux/selinuxfs.c
++++ b/security/selinux/selinuxfs.c
+@@ -1,3 +1,5 @@
++#include <linux/sched.h>
++#include <linux/cred.h>
+ // SPDX-License-Identifier: GPL-2.0-only
+ /* Updated: Karl MacMillan <kmacmillan@tresys.com>
+  *
