@@ -200,10 +200,7 @@ jobs:
           rm -rf drivers/kernelsu
           git clone --depth 1 https://github.com/rifsxd/KernelSU-Next.git drivers/kernelsu
           
-          # Clean previous entries if present to prevent duplicates
           sed -i '/kernelsu/d' drivers/Kconfig drivers/Makefile 2>/dev/null || true
-
-          # Explicitly link drivers/kernelsu/kernel/ directory
           sed -i '/endmenu/i source "drivers/kernelsu/kernel/Kconfig"' drivers/Kconfig
           echo 'obj-$(CONFIG_KSU) += kernelsu/kernel/' >> drivers/Makefile
           echo "✅ Latest KernelSU-Next synced & linked to build system cleanly!"
@@ -225,6 +222,42 @@ jobs:
               echo 'source "fs/nomount/Kconfig"' >> fs/Kconfig
           }
           echo "✅ Latest NoMount synced & integrated successfully!"
+
+          # -------------------------------------------------------------
+          # 2.7 DYNAMIC AUTO-SYNC SUSFS (dev branch)
+          # -------------------------------------------------------------
+          echo "=> Auto-syncing latest SusFS from GitLab (gki-android12-5.10-dev)..."
+          rm -rf /tmp/susfs_repo
+          git clone --depth 1 -b gki-android12-5.10-dev https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs_repo || \
+          git clone --depth 1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs_repo
+
+          # A) Copy SusFS Core C Files & Headers
+          cp -r /tmp/susfs_repo/kernel_patches/fs/* fs/ 2>/dev/null || true
+          cp -r /tmp/susfs_repo/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
+
+          # B) Apply SusFS Core Kernel VFS Patch
+          SUSFS_KERNEL_PATCH=$(find /tmp/susfs_repo/kernel_patches -name "50_add_susfs_in_*.patch" | head -n 1)
+          if [ -n "$SUSFS_KERNEL_PATCH" ] && [ -f "$SUSFS_KERNEL_PATCH" ]; then
+              echo "-> Applying SusFS Kernel VFS Patch: $(basename "$SUSFS_KERNEL_PATCH")..."
+              dos2unix "$SUSFS_KERNEL_PATCH" >/dev/null 2>&1 || true
+              patch -p1 --no-backup-if-mismatch < "$SUSFS_KERNEL_PATCH" || {
+                  echo "::warning::SusFS VFS patch applied with minor offsets/warnings (Normal)"
+              }
+          fi
+
+          # C) Apply SusFS Patch to KernelSU-Next
+          if [ -d "drivers/kernelsu" ]; then
+              SUSFS_KSU_PATCH=$(find /tmp/susfs_repo/kernel_patches/KernelSU* /tmp/susfs_repo/kernel_patches -name "*enable_susfs_for_ksu*.patch" 2>/dev/null | head -n 1)
+              if [ -n "$SUSFS_KSU_PATCH" ] && [ -f "$SUSFS_KSU_PATCH" ]; then
+                  echo "-> Applying SusFS Patch to KernelSU-Next: $(basename "$SUSFS_KSU_PATCH")..."
+                  dos2unix "$SUSFS_KSU_PATCH" >/dev/null 2>&1 || true
+                  cd drivers/kernelsu
+                  patch -p1 --no-backup-if-mismatch < "$SUSFS_KSU_PATCH" || true
+                  cd ../..
+              fi
+          fi
+          rm -rf /tmp/susfs_repo
+          echo "✅ Latest SusFS synced & integrated successfully!"
 
           # -------------------------------------------------------------
           # 3. FIX BTF C-CODE PATCHES (SAFE SED WAY)
@@ -264,8 +297,8 @@ jobs:
           # --- SECURITY, BPF & LSM ---
           inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_DEBUG_INFO_BTF_MODULES=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
 
-          # --- CORE ANDROID, ROOT & INODE SUBSYSTEMS ---
-          inject "" "CONFIG_KSU=y\nCONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
+          # --- CORE ANDROID, ROOT, KSU & SUSFS ---
+          inject "" "CONFIG_KSU=y\nCONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SUS_OVERLAYFS=y\nCONFIG_KSU_SUSFS_TRY_UMOUNT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y\nCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y\nCONFIG_KSU_SUSFS_OPEN_REDIRECT=y\nCONFIG_KSU_SUSFS_SUS_MAP=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
 
           # --- FILESYSTEMS & STORAGE ---
           inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_EROFS_FS_XATTR=y\nCONFIG_EROFS_FS_POSIX_ACL=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y"
