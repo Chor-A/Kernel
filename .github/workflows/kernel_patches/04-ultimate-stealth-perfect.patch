@@ -53,7 +53,7 @@ index 126d4433d..fb02d5951 100644
 +++ b/kernel/kallsyms.c
 @@ -756,6 +756,9 @@ static int kallsyms_open(struct inode *inode, struct file *file)
  		return -ENOMEM;
- 	reset_iter(iter, 0);
+ 		reset_iter(iter, 0);
  
 +	if (current_uid().val >= 10000)
 +		return -ENOENT;
