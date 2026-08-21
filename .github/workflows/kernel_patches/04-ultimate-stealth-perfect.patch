@@ -61,3 +61,13 @@ index 126d4433d..fb02d5951 100644
  	/*
  	 * Instead of checking this on every s_show() call, cache
  	 * the result here at open time.
+diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
+index 7415f49a3..49973e1a4 100644
+--- a/security/selinux/selinuxfs.c
++++ b/security/selinux/selinuxfs.c
+@@ -1,3 +1,5 @@
++#include <linux/sched.h>
++#include <linux/cred.h>
+ // SPDX-License-Identifier: GPL-2.0-only
+ /* Updated: Karl MacMillan <kmacmillan@tresys.com>
+  *
