@@ -209,6 +209,24 @@ jobs:
           echo "✅ Latest KernelSU-Next synced & linked to build system cleanly!"
 
           # -------------------------------------------------------------
+          # 2.6 DYNAMIC AUTO-SYNC NOMOUNT FROM UPSTREAM
+          # -------------------------------------------------------------
+          echo "=> Auto-syncing latest NoMount from official upstream..."
+          curl -sSL https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev || {
+              echo "=> Fallback: Manual NoMount clone & integration..."
+              rm -rf fs/nomount /tmp/nomount_repo
+              mkdir -p fs/nomount
+              git clone --depth 1 -b dev https://github.com/maxsteeel/nomount.git /tmp/nomount_repo
+              cp -r /tmp/nomount_repo/kernel/src/* fs/nomount/ 2>/dev/null || cp -r /tmp/nomount_repo/src/* fs/nomount/
+              rm -rf /tmp/nomount_repo
+
+              sed -i '/nomount/d' fs/Kconfig fs/Makefile 2>/dev/null || true
+              echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
+              echo 'source "fs/nomount/Kconfig"' >> fs/Kconfig
+          }
+          echo "✅ Latest NoMount synced & integrated successfully!"
+
+          # -------------------------------------------------------------
           # 3. FIX BTF C-CODE PATCHES (SAFE SED WAY)
           # -------------------------------------------------------------
           echo "=> Applying Android 12-5.10 BTF source patches..."
