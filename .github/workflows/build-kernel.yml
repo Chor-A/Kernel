@@ -194,6 +194,21 @@ jobs:
           rm -f fs/*.orig fs/*.rej include/linux/*.orig include/linux/*.rej || true
 
           # -------------------------------------------------------------
+          # 2.5 DYNAMIC AUTO-SYNC LATEST KERNELSU-NEXT FROM UPSTREAM
+          # -------------------------------------------------------------
+          echo "=> Auto-syncing latest KernelSU-Next from official upstream..."
+          rm -rf drivers/kernelsu
+          git clone --depth 1 https://github.com/rifsxd/KernelSU-Next.git drivers/kernelsu
+          
+          if ! grep -q "kernelsu" drivers/Makefile; then
+              echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          fi
+          if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
+              sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          fi
+          echo "✅ Latest KernelSU-Next synced & linked to build system!"
+
+          # -------------------------------------------------------------
           # 3. FIX BTF C-CODE PATCHES (SAFE SED WAY)
           # -------------------------------------------------------------
           echo "=> Applying Android 12-5.10 BTF source patches..."
