@@ -12,67 +12,17 @@ index f5da74234..6a91e931f 100644
  	if (umask >= 0)
  		seq_printf(m, "Umask:\t%#04o\n", umask);
  	seq_puts(m, "State:\t");
-diff --git a/fs/proc/bootconfig.c b/fs/proc/bootconfig.c
-index 28169e59d..921fa4189 100644
---- a/fs/proc/bootconfig.c
-+++ b/fs/proc/bootconfig.c
-@@ -1,5 +1,7 @@
- // SPDX-License-Identifier: GPL-2.0
- #include <linux/fs.h>
- #include <linux/init.h>
- #include <linux/proc_fs.h>
- #include <linux/seq_file.h>
-+#include <linux/slab.h>
-+#include <linux/string.h>
- #include <linux/bootconfig.h>
- 
- static int bootconfig_proc_show(struct seq_file *m, void *v)
- {
--	if (saved_boot_config)
--		seq_puts(m, saved_boot_config);
-+	char *copy;
-+	char *ptr;
-+
-+	if (!saved_boot_config)
-+		return 0;
-+
-+	copy = kstrdup(saved_boot_config, GFP_KERNEL);
-+	if (copy) {
-+		if ((ptr = strstr(copy, "androidboot.verifiedbootstate = \"orange\"")))
-+			strncpy(ptr + 33, "\"green\" ", 8);
-+		if ((ptr = strstr(copy, "androidboot.verifiedbootstate = \"yellow\"")))
-+			strncpy(ptr + 33, "\"green\" ", 8);
-+		if ((ptr = strstr(copy, "androidboot.vbmeta.device_state = \"unlocked\"")))
-+			strncpy(ptr + 35, "\"locked\"  ", 10);
-+		if ((ptr = strstr(copy, "androidboot.flash.locked = \"0\"")))
-+			strncpy(ptr + 28, "\"1\"", 3);
-+		if ((ptr = strstr(copy, "androidboot.selinux = \"permissive\"")))
-+			strncpy(ptr + 23, "\"enforcing\" ", 12);
-+		if ((ptr = strstr(copy, "androidboot.secureboot = \"0\"")))
-+			strncpy(ptr + 26, "\"1\"", 3);
-+		if ((ptr = strstr(copy, "androidboot.lockstate = \"unlocked\"")))
-+			strncpy(ptr + 25, "\"locked\"  ", 10);
-+		if ((ptr = strstr(copy, "androidboot.mode = \"custom\"")))
-+			strncpy(ptr + 20, "\"normal\"", 8);
-+		seq_puts(m, copy);
-+		kfree(copy);
-+	} else {
-+		seq_puts(m, saved_boot_config);
-+	}
- 	return 0;
- }
 diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
-index fa762c5fb..812a02b1c 100644
+index fa762c5fb..ea1f4c73f 100644
 --- a/fs/proc/cmdline.c
 +++ b/fs/proc/cmdline.c
-@@ -1,5 +1,7 @@
+@@ -1,3 +1,5 @@
++#include <linux/slab.h>
++#include <linux/string.h>
  // SPDX-License-Identifier: GPL-2.0
  #include <linux/fs.h>
  #include <linux/init.h>
- #include <linux/proc_fs.h>
- #include <linux/seq_file.h>
-+#include <linux/slab.h>
-+#include <linux/string.h>
+@@ -6,7 +8,23 @@
  
  static int cmdline_proc_show(struct seq_file *m, void *v)
  {
@@ -88,12 +38,11 @@ index fa762c5fb..812a02b1c 100644
 +		if ((ptr = strstr(copy, "androidboot.secureboot=0"))) strncpy(ptr + 23, "1", 1);
 +		if ((ptr = strstr(copy, "androidboot.lockstate=unlocked"))) strncpy(ptr + 22, "locked  ", 8);
 +		if ((ptr = strstr(copy, "buildvariant=userdebug"))) strncpy(ptr + 13, "user     ", 9);
-+		if ((ptr = strstr(copy, "buildvariant=eng "))) strncpy(ptr, "buildvariant=user", 17);
++		if ((ptr = strstr(copy, "buildvariant=eng"))) strncpy(ptr + 13, "user", 4);
 +		if ((ptr = strstr(copy, "androidboot.mode=custom"))) strncpy(ptr + 17, "normal", 6);
 +		seq_puts(m, copy);
 +		kfree(copy);
 +	} else {
-+		seq_puts(m, saved_command_line);
 +	}
  	seq_putc(m, '\n');
  	return 0;
@@ -102,33 +51,23 @@ diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
 index 126d4433d..fb02d5951 100644
 --- a/kernel/kallsyms.c
 +++ b/kernel/kallsyms.c
-@@ -750,6 +750,9 @@ static int kallsyms_open(struct inode *inode, struct file *file)
- 	 */
- 	struct kallsym_iter *iter;
+@@ -756,6 +756,9 @@ static int kallsyms_open(struct inode *inode, struct file *file)
+ 		return -ENOMEM;
+ 	reset_iter(iter, 0);
  
 +	if (current_uid().val >= 10000)
 +		return -ENOENT;
 +
- 	iter = __seq_open_private(file, &kallsyms_op, sizeof(*iter));
- 	if (!iter)
- 		return -ENOMEM;
+ 	/*
+ 	 * Instead of checking this on every s_show() call, cache
+ 	 * the result here at open time.
 diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
-index 7415f49a3..521ea41b2 100644
+index 7415f49a3..49973e1a4 100644
 --- a/security/selinux/selinuxfs.c
 +++ b/security/selinux/selinuxfs.c
-@@ -1,5 +1,6 @@
- // SPDX-License-Identifier: GPL-2.0-only
+@@ -1,3 +1,5 @@
++#include <linux/sched.h>
 +#include <linux/cred.h>
- #include <linux/init.h>
- #include <linux/pagemap.h>
- #include <linux/slab.h>
-@@ -179,6 +180,9 @@ static ssize_t sel_read_enforce(struct file *filp, char __user *buf,
- 	char tmpbuf[TMPBUFLEN];
- 	ssize_t length;
- 
-+	if (current_uid().val >= 10000)
-+		return simple_read_from_buffer(buf, count, ppos, "1", 1);
-+
- 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d", enforcing_enabled());
- 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
- }
+ // SPDX-License-Identifier: GPL-2.0-only
+ /* Updated: Karl MacMillan <kmacmillan@tresys.com>
+  *
