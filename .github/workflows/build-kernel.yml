@@ -190,18 +190,75 @@ jobs:
               done
           fi
 
+          # Minor Issue Fix: Clean up dirty .orig and .rej files left by patches
+          rm -f fs/*.orig fs/*.rej include/linux/*.orig include/linux/*.rej drivers/kernelsu/*.orig drivers/kernelsu/*.rej || true
+
           # -------------------------------------------------------------
           # 2.5 LINK KERNELSU & SUSFS TO KERNEL BUILD SYSTEM
           # -------------------------------------------------------------
-          echo "=> Hooking KSU & SusFS into drivers..."
+          echo "=> Hooking KSU & SusFS into drivers & filesystem..."
+          
+          # A) KernelSU
           if [ -d "drivers/kernelsu" ] && ! grep -q "kernelsu" drivers/Makefile; then
               echo 'obj-$(CONFIG_KSU) += kernelsu/kernel/' >> drivers/Makefile
               sed -i '/endmenu/i source "drivers/kernelsu/kernel/Kconfig"' drivers/Kconfig
-              echo "✅ KernelSU & SusFS Successfully Linked!"
+              echo "✅ KernelSU Successfully Linked!"
+          fi
+
+          # B) SusFS Kconfig Injection (Using safe echo to avoid YAML UI errors)
+          if ! grep -q "KSU_SUSFS" fs/Kconfig; then
+              {
+                  echo 'config KSU_SUSFS'
+                  echo '	bool "KernelSU SuSFS Support"'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_SUS_PATH'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_SUS_MOUNT'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_SUS_KSTAT'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_SUS_OVERLAYFS'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_TRY_UMOUNT'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_SPOOF_UNAME'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_ENABLE_LOG'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG'
+                  echo '	bool'
+                  echo '	default y'
+                  echo 'config KSU_SUSFS_OPEN_REDIRECT'
+                  echo '	bool'
+                  echo '	default y'
+              } >> fs/Kconfig
+              echo "✅ SusFS Kconfig injected successfully!"
+          fi
+
+          # C) SusFS Makefile Linking
+          if [ -f "fs/susfs.c" ] && ! grep -q "susfs.o" fs/Makefile; then
+              echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
+              echo "✅ SusFS Successfully Linked to fs/Makefile!"
           fi
 
           # -------------------------------------------------------------
-          # 3. FIX BTF C-CODE PATCHES (SAFE SED WAY, NO PATCH FILE)
+          # 3. FIX BTF C-CODE PATCHES (SAFE SED WAY)
           # -------------------------------------------------------------
           echo "=> Applying Android 12-5.10 BTF source patches..."
           sed -i 's/} __UNIQUE_ID(android_kabi_hide);/};/g' include/linux/android_kabi.h || true
@@ -239,7 +296,7 @@ jobs:
           inject "" "CONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\nCONFIG_CGROUP_BPF=y\nCONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_SPLIT=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_DEBUG_INFO_BTF_MODULES=y\nCONFIG_SECURITY=y\nCONFIG_SECURITY_NETWORK=y\nCONFIG_CRYPTO_SHA256=y\nCONFIG_ASYMMETRIC_KEY_TYPE=y\nCONFIG_SECURITY_SELINUX=y\nCONFIG_SECURITY_APPARMOR=y\nCONFIG_SECURITY_SAFESETID=y\nCONFIG_SECURITY_LOCKDOWN_LSM=y\nCONFIG_BPF_LSM=y"
 
           # --- ANDROID ROOT, KSU & SUSFS ---
-          inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y\nCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y\nCONFIG_KSU_SUSFS_OPEN_REDIRECT=y\nCONFIG_KSU_SUSFS_SUS_MAP=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
+          inject "" "CONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SUS_OVERLAYFS=y\nCONFIG_KSU_SUSFS_TRY_UMOUNT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y\nCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y\nCONFIG_KSU_SUSFS_OPEN_REDIRECT=y\nCONFIG_KSU_SUSFS_SUS_MAP=y\nCONFIG_ANON_INODES=y\nCONFIG_EVENTFD=y\nCONFIG_ANDROID_BINDER_IPC=y\nCONFIG_ANDROID_BINDERFS=y\nCONFIG_MODULE_SKIP_BUILTIN=y"
 
           # --- FILESYSTEMS & STORAGE ---
           inject "" "CONFIG_BLOCK=y\nCONFIG_BLK_INLINE_ENCRYPTION=y\nCONFIG_FS_ENCRYPTION=y\nCONFIG_FS_VERITY=y\nCONFIG_CRYPTO_CRC32=y\nCONFIG_F2FS_FS=y\nCONFIG_F2FS_FS_COMPRESSION=y\nCONFIG_F2FS_FS_ZSTD=y\nCONFIG_EROFS_FS=y\nCONFIG_EROFS_FS_ZIP=y\nCONFIG_EROFS_FS_XATTR=y\nCONFIG_EROFS_FS_POSIX_ACL=y\nCONFIG_MODULES=y\nCONFIG_MODULE_UNLOAD=y\nCONFIG_ZSTD_COMPRESS=y\nCONFIG_ZSTD_DECOMPRESS=y\nCONFIG_XZ_DEC_ARM64=y"
