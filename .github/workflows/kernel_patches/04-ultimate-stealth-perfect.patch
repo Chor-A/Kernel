@@ -35,6 +35,8 @@ index fa762c5fb..ea1f4c73f 100644
 +		if ((ptr = strstr(copy, "androidboot.vbmeta.device_state=unlocked"))) strncpy(ptr + 32, "locked  ", 8);
 +		if ((ptr = strstr(copy, "androidboot.flash.locked=0"))) strncpy(ptr + 25, "1", 1);
 +		if ((ptr = strstr(copy, "androidboot.selinux=permissive"))) strncpy(ptr + 20, "enforcing ", 10);
++		if ((ptr = strstr(copy, "androidboot.secureboot=0"))) strncpy(ptr + 23, "1", 1);
++		if ((ptr = strstr(copy, "androidboot.lockstate=unlocked"))) strncpy(ptr + 22, "locked  ", 8);
 +		if ((ptr = strstr(copy, "buildvariant=userdebug"))) strncpy(ptr + 13, "user     ", 9);
 +		if ((ptr = strstr(copy, "buildvariant=eng"))) strncpy(ptr + 13, "user", 4);
 +		if ((ptr = strstr(copy, "androidboot.mode=custom"))) strncpy(ptr + 17, "normal", 6);
