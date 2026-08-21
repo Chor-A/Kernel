@@ -205,6 +205,7 @@ jobs:
           # -------------------------------------------------------------
           echo "=> Applying Android 12-5.10 BTF source patches..."
           sed -i 's/} __UNIQUE_ID(android_kabi_hide);/};/g' include/linux/android_kabi.h || true
+          sed -i '/#include <linux\/bug.h>/a #include <linux\/btf.h>' net/core/xdp.c || true
           sed -i '/__xdp_return(xdp->data, &xdp->rxq->mem, true, xdp);/a \
           \tBTF_TYPE_EMIT(struct xdp_buff);' net/core/xdp.c || true
           sed -i 's/elf_flagdata(obj->efile.idlist, ELF_C_SET, ELF_F_DIRTY);/obj->efile.idlist->d_type = ELF_T_WORD;\n\telf_flagdata(obj->efile.idlist, ELF_C_SET, ELF_F_DIRTY);/g' tools/bpf/resolve_btfids/main.c || true
