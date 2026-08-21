@@ -1,5 +1,5 @@
 diff --git a/fs/proc/array.c b/fs/proc/array.c
-index f5da74234..d8c9a1234 100644
+index f5da74234..a8b7c6d5e 100644
 --- a/fs/proc/array.c
 +++ b/fs/proc/array.c
 @@ -60,6 +60,7 @@
@@ -135,7 +135,7 @@ index 28169e59d..c7e9a8123 100644
  	return 0;
  }
 diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
-index fa762c5fb..b8a7c6e5d 100644
+index fa762c5fb..9e8d7c6b5 100644
 --- a/fs/proc/cmdline.c
 +++ b/fs/proc/cmdline.c
 @@ -1,5 +1,7 @@
@@ -149,40 +149,32 @@ index fa762c5fb..b8a7c6e5d 100644
  
 +static void sanitize_and_print_token(struct seq_file *m, const char *token, size_t len)
 +{
-+	if ((len == 36 && strncmp(token, "androidboot.verifiedbootstate=orange", 36) == 0) ||
-+	    (len == 36 && strncmp(token, "androidboot.verifiedbootstate=yellow", 36) == 0) ||
-+	    (len == 38 && strncmp(token, "androidboot.verifiedbootstate=\"orange\"", 38) == 0) ||
-+	    (len == 38 && strncmp(token, "androidboot.verifiedbootstate=\"yellow\"", 38) == 0))
++#define MATCH_PREFIX(prefix) (len >= (sizeof(prefix) - 1) && strncmp(token, prefix, sizeof(prefix) - 1) == 0)
++
++	if (MATCH_PREFIX("androidboot.verifiedbootstate="))
 +		seq_puts(m, "androidboot.verifiedbootstate=green");
-+	else if ((len == 40 && strncmp(token, "androidboot.vbmeta.device_state=unlocked", 40) == 0) ||
-+	         (len == 42 && strncmp(token, "androidboot.vbmeta.device_state=\"unlocked\"", 42) == 0))
++	else if (MATCH_PREFIX("androidboot.vbmeta.device_state="))
 +		seq_puts(m, "androidboot.vbmeta.device_state=locked");
-+	else if ((len == 26 && strncmp(token, "androidboot.flash.locked=0", 26) == 0) ||
-+	         (len == 28 && strncmp(token, "androidboot.flash.locked=\"0\"", 28) == 0))
++	else if (MATCH_PREFIX("androidboot.flash.locked="))
 +		seq_puts(m, "androidboot.flash.locked=1");
-+	else if ((len == 30 && strncmp(token, "androidboot.selinux=permissive", 30) == 0) ||
-+	         (len == 32 && strncmp(token, "androidboot.selinux=\"permissive\"", 32) == 0))
++	else if (MATCH_PREFIX("androidboot.selinux="))
 +		seq_puts(m, "androidboot.selinux=enforcing");
-+	else if ((len == 24 && strncmp(token, "androidboot.secureboot=0", 24) == 0) ||
-+	         (len == 26 && strncmp(token, "androidboot.secureboot=\"0\"", 26) == 0))
++	else if (MATCH_PREFIX("androidboot.secureboot="))
 +		seq_puts(m, "androidboot.secureboot=1");
-+	else if (len == 41 && strncmp(token, "androidboot.secureboot.lockstate=unlocked", 41) == 0)
++	else if (MATCH_PREFIX("androidboot.secureboot.lockstate="))
 +		seq_puts(m, "androidboot.secureboot.lockstate=locked");
-+	else if ((len == 30 && strncmp(token, "androidboot.realme.lockstate=0", 30) == 0) ||
-+	         (len == 32 && strncmp(token, "androidboot.realme.lockstate=\"0\"", 32) == 0))
++	else if (MATCH_PREFIX("androidboot.realme.lockstate="))
 +		seq_puts(m, "androidboot.realme.lockstate=1");
-+	else if (len == 37 && strncmp(token, "androidboot.realme.lockstate=unlocked", 37) == 0)
-+		seq_puts(m, "androidboot.realme.lockstate=locked");
-+	else if (len == 30 && strncmp(token, "androidboot.lockstate=unlocked", 30) == 0)
++	else if (MATCH_PREFIX("androidboot.lockstate="))
 +		seq_puts(m, "androidboot.lockstate=locked");
-+	else if (len == 22 && strncmp(token, "buildvariant=userdebug", 22) == 0)
++	else if (MATCH_PREFIX("buildvariant="))
 +		seq_puts(m, "buildvariant=user");
-+	else if (len == 16 && strncmp(token, "buildvariant=eng", 16) == 0)
-+		seq_puts(m, "buildvariant=user");
-+	else if (len == 23 && strncmp(token, "androidboot.mode=custom", 23) == 0)
++	else if (MATCH_PREFIX("androidboot.mode="))
 +		seq_puts(m, "androidboot.mode=normal");
 +	else
 +		seq_write(m, token, len);
++
++#undef MATCH_PREFIX
 +}
 +
  static int cmdline_proc_show(struct seq_file *m, void *v)
@@ -203,7 +195,7 @@ index fa762c5fb..b8a7c6e5d 100644
 +
 +	p = saved_command_line;
 +	while (*p) {
-+		/* Preserve original whitespace (spaces, tabs) verbatim */
++		/* Preserve original whitespace (spaces, tabs, newlines) verbatim */
 +		if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
 +			seq_putc(m, *p);
 +			p++;
