@@ -145,7 +145,7 @@ jobs:
           git config --global user.name "GitHub Action Bot"
 
           # -------------------------------------------------------------
-          # 1. APPLY CUSTOM PATCHES (MGLRU & ULTIMATE STEALTH)
+          # 1. APPLY CUSTOM PATCH FILES (IF PRESENT)
           # -------------------------------------------------------------
           echo "=> Checking for custom patches in 'kernel_patches' folder..."
           PATCH_DIR="${GITHUB_WORKSPACE}/.github/workflows/kernel_patches"
@@ -368,12 +368,71 @@ jobs:
           cd ..
           echo "=> Clean Templar-style AnyKernel3 zip created successfully!"
 
+      - name: Repack Clean Boot Image with Built GKI Kernel 📦
+        if: ${{ inputs.stock_boot_url != '' }}
+        run: |
+          set -euo pipefail
+          echo "========================================="
+          echo " 🚀 REPACKING CLEAN BOOT.IMG (SAFE)      "
+          echo "========================================="
+
+          echo "=> Downloading base boot.img from: ${{ env.STOCK_BOOT_URL }}"
+          curl -sSL -o /tmp/stock_boot.img "${{ env.STOCK_BOOT_URL }}"
+
+          rm -rf /tmp/mkbootimg_tools
+          git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg_tools
+
+          mkdir -p /tmp/extracted_boot
+          python3 /tmp/mkbootimg_tools/unpack_bootimg.py \
+            --boot_img /tmp/stock_boot.img \
+            --out /tmp/extracted_boot
+
+          BUILT_KERNEL=""
+          for f in Image Image.gz Image.lz4 zImage; do
+            if [ -f "work/dist/$f" ]; then
+              BUILT_KERNEL="work/dist/$f"
+              break
+            fi
+          done
+
+          if [ -z "$BUILT_KERNEL" ]; then
+            echo "::error::Built kernel not found in work/dist"
+            exit 1
+          fi
+
+          echo "=> Replacing kernel with built GKI kernel: $BUILT_KERNEL"
+          cp -f "$BUILT_KERNEL" /tmp/extracted_boot/kernel
+
+          mkdir -p work/pkg
+          HEADER_VER=$(cat /tmp/extracted_boot/header_version 2>/dev/null || echo 4)
+          OS_VER=$(cat /tmp/extracted_boot/os_version 2>/dev/null || echo "12.0.0")
+          OS_PATCH=$(cat /tmp/extracted_boot/os_patch_level 2>/dev/null || echo "2022-01")
+
+          EXTRA_ARGS=()
+          [ -f /tmp/extracted_boot/dtb ] && EXTRA_ARGS+=("--dtb" "/tmp/extracted_boot/dtb")
+          [ -f /tmp/extracted_boot/recovery_dtbo ] && EXTRA_ARGS+=("--recovery_dtbo" "/tmp/extracted_boot/recovery_dtbo")
+          [ -f /tmp/extracted_boot/cmdline ] && EXTRA_ARGS+=("--cmdline" "$(cat /tmp/extracted_boot/cmdline)")
+
+          python3 /tmp/mkbootimg_tools/mkbootimg.py \
+            --kernel /tmp/extracted_boot/kernel \
+            --ramdisk /tmp/extracted_boot/ramdisk \
+            --header_version "$HEADER_VER" \
+            --os_version "$OS_VER" \
+            --os_patch_level "$OS_PATCH" \
+            "${EXTRA_ARGS[@]}" \
+            -o work/pkg/boot-gki.img
+
+          echo "✅ Clean Repacked Boot Image Ready: work/pkg/boot-gki.img"
+          ls -lh work/pkg/boot-gki.img
+
       - name: Upload flashable zip
         if: ${{ inputs.pack_flashable && !inputs.publish_release }}
         uses: actions/upload-artifact@v5
         with:
           name: kernel-anykernel3-zip
-          path: work/pkg/templar-kernel-anykernel3.zip
+          path: |
+            work/pkg/templar-kernel-anykernel3.zip
+            work/pkg/boot-gki.img
           if-no-files-found: ignore
 
       - name: Publish release
@@ -396,6 +455,9 @@ jobs:
           assets+=("$pkg/kernel-dist.tar.zst")
           if [ -f "$pkg/templar-kernel-anykernel3.zip" ]; then
             assets+=("$pkg/templar-kernel-anykernel3.zip")
+          fi
+          if [ -f "$pkg/boot-gki.img" ]; then
+            assets+=("$pkg/boot-gki.img")
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" --clobber "${assets[@]}"
