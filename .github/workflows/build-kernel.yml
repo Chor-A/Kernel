@@ -203,7 +203,7 @@ jobs:
           perl -pi -e '$_ = "" if /kernelsu/' drivers/Kconfig drivers/Makefile 2>/dev/null || true
           perl -pi -e 's/endmenu/source "drivers\/kernelsu\/kernel\/Kconfig"\nendmenu/' drivers/Kconfig
           echo 'obj-$(CONFIG_KSU) += kernelsu/kernel/' >> drivers/Makefile
-          echo "✅ Latest KernelSU-Next synced & linked cleanly!"
+          echo "✅ Latest KernelSU-Next synced & linked cleanly (via Perl)!"
 
           # -------------------------------------------------------------
           # 2.6 DYNAMIC AUTO-SYNC NOMOUNT FROM UPSTREAM
@@ -250,7 +250,7 @@ jobs:
           # -------------------------------------------------------------
           # 3. FIX BTF C-CODE PATCHES (POWERFUL PERL WAY)
           # -------------------------------------------------------------
-          echo "=> Applying Android 12-5.10 BTF source patches..."
+          echo "=> Applying Android 12-5.10 BTF source patches (via Perl)..."
           perl -pi -e 's/\} __UNIQUE_ID\(android_kabi_hide\);/\};/g' include/linux/android_kabi.h 2>/dev/null || true
           perl -pi -e 's/#include <linux\/bug\.h>/#include <linux\/bug.h>\n#include <linux\/btf.h>/' net/core/xdp.c 2>/dev/null || true
           perl -pi -e 's/(__xdp_return\(xdp->data, &xdp->rxq->mem, true, xdp\);)/$1\n\tBTF_TYPE_EMIT(struct xdp_buff);/' net/core/xdp.c 2>/dev/null || true
@@ -264,7 +264,7 @@ jobs:
           chmod +x ../build/build-tools/path/linux-x86/pahole || true
 
           # -------------------------------------------------------------
-          # 5. Master Config Injector (CLEAN, SAFE & PURE)
+          # 5. Master Config Injector (CLEAN, CRASH-FREE & PURE)
           # -------------------------------------------------------------
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
@@ -405,14 +405,15 @@ jobs:
 
           mkdir -p ../work/pkg
 
-          # 1. Clean out all extra directories (Matching Templar zip 1:1)
+          # 1. DELETE ALL UNNECESSARY FOLDERS (Templar zip structure 1:1 match)
           rm -rf .git modules patch ramdisk README.md dtb dtbo.img
 
           # 2. Strictly copy RAW Image (Matching Templar)
           cp ../work/dist/Image .
           echo "=> Using Raw Image: Image"
 
-          # 3. Universal AnyKernel3 configuration (Via Perl)
+          # 3. Completely DISABLE Device Check (100% Universal via Perl)
+          perl -pi -e 's/do\.devicecheck=1/do.devicecheck=0/' anykernel.sh
           perl -pi -e 's/^kernel\.string=.*/kernel.string=CloudFox Kernel/' anykernel.sh
           perl -pi -e 's/^device\.name\d+=.*//' anykernel.sh
           perl -pi -e 's/^block=.*/block=auto;/' anykernel.sh
@@ -421,7 +422,7 @@ jobs:
           # 4. Pack clean zip matching Templar
           zip -r9 "../work/pkg/cloudfox-kernel-anykernel3.zip" .
           cd ..
-          echo "=> Clean Templar-style AnyKernel3 zip created successfully!"
+          echo "=> 100% Universal AnyKernel3 zip created successfully!"
 
       - name: Upload flashable zip
         if: ${{ inputs.pack_flashable && !inputs.publish_release }}
