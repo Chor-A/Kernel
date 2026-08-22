@@ -145,7 +145,7 @@ jobs:
           git config --global user.name "GitHub Action Bot"
 
           # -------------------------------------------------------------
-          # 1. APPLY CUSTOM PATCH FILES (IF PRESENT)
+          # 1. APPLY CUSTOM PATCHES (SMART MERGE FALLBACK)
           # -------------------------------------------------------------
           echo "=> Checking for custom patches in 'kernel_patches' folder..."
           PATCH_DIR="${GITHUB_WORKSPACE}/.github/workflows/kernel_patches"
@@ -159,8 +159,11 @@ jobs:
                   
                   dos2unix "$patch_file" >/dev/null 2>&1 || true
                   
-                  if patch -p1 --no-backup-if-mismatch < "$patch_file"; then
-                      echo "✅ Successfully applied $patch_name"
+                  # Try git apply first, then patch with 2-line fuzz fallback
+                  if git apply --whitespace=nowarn "$patch_file" 2>/dev/null; then
+                      echo "✅ Successfully applied $patch_name (via git apply)"
+                  elif patch -p1 -F 3 --no-backup-if-mismatch < "$patch_file"; then
+                      echo "✅ Successfully applied $patch_name (via patch with fuzz)"
                   else
                       echo "❌ ERROR: $patch_name failed to apply!"
                       exit 1
@@ -169,7 +172,7 @@ jobs:
               done
           fi
 
-          rm -f fs/*.orig fs/*.rej include/linux/*.orig include/linux/*.rej || true
+          rm -f fs/*.orig fs/*.rej include/linux/*.orig include/linux/*.rej mm/*.rej arch/arm64/configs/*.rej || true
 
           # -------------------------------------------------------------
           # 2. DYNAMIC AUTO-SYNC KERNELSU-NEXT
@@ -224,7 +227,7 @@ jobs:
           chmod +x ../build/build-tools/path/linux-x86/pahole || true
 
           # -------------------------------------------------------------
-          # 6. Master Config Injector (CLEAN KSU + SUSFS ONLY)
+          # 6. Master Config Injector (CLEAN KSU + SUSFS + MGLRU)
           # -------------------------------------------------------------
           echo "=> Generating Clean Config Fragment..."
           FRAG="/tmp/god_tier.config"
@@ -249,6 +252,8 @@ jobs:
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_LRU_GEN=y
+          CONFIG_LRU_GEN_ENABLED=y
           CONF
 
           echo "=> Appending Clean Config to Defconfigs..."
@@ -455,9 +460,6 @@ jobs:
           assets+=("$pkg/kernel-dist.tar.zst")
           if [ -f "$pkg/templar-kernel-anykernel3.zip" ]; then
             assets+=("$pkg/templar-kernel-anykernel3.zip")
-          fi
-          if [ -f "$pkg/boot-gki.img" ]; then
-            assets+=("$pkg/boot-gki.img")
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" --clobber "${assets[@]}"
