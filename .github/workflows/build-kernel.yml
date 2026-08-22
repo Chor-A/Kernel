@@ -265,7 +265,7 @@ jobs:
           chmod +x ../build/build-tools/path/linux-x86/pahole || true
 
           # -------------------------------------------------------------
-          # 5. Master Config Injector (CLEAN & COMPLETE - ZERO BLOAT)
+          # 5. Master Config Injector (CLEAN, SAFE & PURE)
           # -------------------------------------------------------------
           echo "=> Generating Smart Config Fragment..."
           FRAG="/tmp/god_tier.config"
@@ -408,18 +408,14 @@ jobs:
 
           mkdir -p ../work/pkg
 
-          # Prefer Image.lz4 for modern GKI 5.10, fallback to Image
-          kernel_img=""
-          for f in Image.lz4 Image.gz Image zImage; do
-            if [ -f "../work/dist/$f" ]; then
-              kernel_img="$f"
-              break
-            fi
-          done
-          cp "../work/dist/$kernel_img" .
-          echo "=> Selected Kernel Payload: $kernel_img"
+          # 1. DELETE ALL UNNECESSARY FOLDERS (Templar zip structure 1:1 match)
+          rm -rf .git modules patch ramdisk README.md dtb dtbo.img
 
-          # --- UNIVERSAL ANYKERNEL3 CONFIGURATION ---
+          # 2. Strictly copy RAW Image (Matching Templar)
+          cp ../work/dist/Image .
+          echo "=> Using Raw Image: Image"
+
+          # 3. Universal AnyKernel3 configuration (No device check, auto block detection)
           sed -i "s/^kernel.string=.*/kernel.string=CloudFox Kernel/" anykernel.sh
           sed -i 's/^device.name1=.*/device.name1=/' anykernel.sh
           sed -i 's/^device.name2=.*/device.name2=/' anykernel.sh
@@ -427,52 +423,4 @@ jobs:
           sed -i 's/^device.name4=.*/device.name4=/' anykernel.sh
           sed -i 's/^device.name5=.*/device.name5=/' anykernel.sh
           sed -i 's/^block=.*/block=auto;/' anykernel.sh
-          sed -i 's/^is_slot_device=.*/is_slot_device=auto;/' anykernel.sh
-
-          # Copy dtb if present
-          [ -f "../work/dist/dtb" ] && cp "../work/dist/dtb" . || true
-          [ -f "../work/dist/dtbo.img" ] && cp "../work/dist/dtbo.img" . || true
-
-          # Create universal zip
-          zip -r9 "../work/pkg/cloudfox-kernel-anykernel3.zip" .
-          cd ..
-          echo "=> Universal AnyKernel3 zip created successfully!"
-
-      - name: Upload flashable zip
-        if: ${{ inputs.pack_flashable && !inputs.publish_release }}
-        uses: actions/upload-artifact@v5
-        with:
-          name: kernel-anykernel3-zip
-          path: work/pkg/cloudfox-kernel-anykernel3.zip
-          if-no-files-found: ignore
-
-      - name: Publish release
-        if: ${{ inputs.publish_release }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="$RELEASE_TAG"
-          if [ -z "$tag" ]; then
-            tag="kernel-$(date -u +%Y%m%d)"
-          fi
-          cd "$GITHUB_WORKSPACE/work/dist"
-          pkg="$GITHUB_WORKSPACE/work/pkg"
-          mkdir -p "$pkg"
-          assets=()
-          for f in Image Image.lz4 vmlinux System.map ikconfig .config; do
-            [ -f "$f" ] && assets+=("$f")
-          done
-          tar -I 'zstd -T0' -cf "$pkg/kernel-dist.tar.zst" .
-          assets+=("$pkg/kernel-dist.tar.zst")
-          if [ -f "$pkg/cloudfox-kernel-anykernel3.zip" ]; then
-            assets+=("$pkg/cloudfox-kernel-anykernel3.zip")
-          fi
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" --clobber "${assets[@]}"
-          else
-            gh release create "$tag" \
-              --title "CloudFox kernel build $tag" \
-              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} via Google's unmodified build.sh. $(date -u '+%Y-%m-%d %H:%M UTC')" \
-              "${assets[@]}"
-          fi
-          echo "release $tag updated"
+          sed -i 's/^is_slot_dev
