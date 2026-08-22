@@ -1,0 +1,113 @@
+diff --git a/fs/proc/array.c b/fs/proc/array.c
+index f5da74234..6a91e931f 100644
+--- a/fs/proc/array.c
++++ b/fs/proc/array.c
+@@ -179,6 +179,9 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
+ 	task_unlock(p);
+ 	rcu_read_unlock();
+ 
++	if (from_kuid(&init_user_ns, current_uid()) >= 10000)
++		tpid = 0;
++
+ 	if (umask >= 0)
+ 		seq_printf(m, "Umask:\t%#04o\n", umask);
+ 	seq_puts(m, "State:\t");
+diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
+index fa762c5fb..8a1e53fc2 100644
+--- a/fs/proc/cmdline.c
++++ b/fs/proc/cmdline.c
+@@ -1,12 +1,69 @@
+ // SPDX-License-Identifier: GPL-2.0
++#include <linux/cred.h>
+ #include <linux/fs.h>
+ #include <linux/init.h>
+ #include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
++#include <linux/string.h>
++
++static void sanitize_and_print_token(struct seq_file *m, const char *token, size_t len)
++{
++#define MATCH_PREFIX(prefix) (len >= (sizeof(prefix) - 1) && strncmp(token, prefix, sizeof(prefix) - 1) == 0)
++
++	if (MATCH_PREFIX("androidboot.verifiedbootstate="))
++		seq_puts(m, "androidboot.verifiedbootstate=green");
++	else if (MATCH_PREFIX("androidboot.vbmeta.device_state="))
++		seq_puts(m, "androidboot.vbmeta.device_state=locked");
++	else if (MATCH_PREFIX("androidboot.flash.locked="))
++		seq_puts(m, "androidboot.flash.locked=1");
++	else if (MATCH_PREFIX("androidboot.selinux="))
++		seq_puts(m, "androidboot.selinux=enforcing");
++	else if (MATCH_PREFIX("androidboot.secureboot="))
++		seq_puts(m, "androidboot.secureboot=1");
++	else if (MATCH_PREFIX("androidboot.secureboot.lockstate="))
++		seq_puts(m, "androidboot.secureboot.lockstate=locked");
++	else if (MATCH_PREFIX("androidboot.realme.lockstate="))
++		seq_puts(m, "androidboot.realme.lockstate=1");
++	else if (MATCH_PREFIX("androidboot.lockstate="))
++		seq_puts(m, "androidboot.lockstate=locked");
++	else if (MATCH_PREFIX("buildvariant="))
++		seq_puts(m, "buildvariant=user");
++	else if (MATCH_PREFIX("androidboot.mode="))
++		seq_puts(m, "androidboot.mode=normal");
++	else
++		seq_write(m, token, len);
++
++#undef MATCH_PREFIX
++}
+ 
+ static int cmdline_proc_show(struct seq_file *m, void *v)
+ {
+-	seq_puts(m, saved_command_line);
++	const char *p;
++
++	if (!saved_command_line) {
++		seq_putc(m, '\n');
++		return 0;
++	}
++
++	if (from_kuid(&init_user_ns, current_uid()) < 10000) {
++		seq_puts(m, saved_command_line);
++		seq_putc(m, '\n');
++		return 0;
++	}
++
++	p = saved_command_line;
++	while (*p) {
++		if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
++			seq_putc(m, *p);
++			p++;
++		} else {
++			const char *token_start = p;
++			while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n')
++				p++;
++			sanitize_and_print_token(m, token_start, p - token_start);
++		}
++	}
++
+ 	seq_putc(m, '\n');
+ 	return 0;
+ }
+diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
+index 126d4433d..fb02d5951 100644
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -756,6 +756,9 @@ static int kallsyms_open(struct inode *inode, struct file *file)
+ 		return -ENOMEM;
+ 	reset_iter(iter, 0);
+ 
++	if (from_kuid(&init_user_ns, current_uid()) >= 10000)
++		return -ENOENT;
++
+ 	/*
+ 	 * Instead of checking this on every s_show() call, cache
+ 	 * the result here at open time.
+diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
+index 7415f49a3..49973e1a4 100644
+--- a/security/selinux/selinuxfs.c
++++ b/security/selinux/selinuxfs.c
+@@ -1,3 +1,5 @@
++#include <linux/sched.h>
++#include <linux/cred.h>
+ // SPDX-License-Identifier: GPL-2.0-only
+ /* Updated: Karl MacMillan <kmacmillan@tresys.com>
+  *
