@@ -35,7 +35,7 @@ name: build-kernel
         type: boolean
         default: true
       defconfig_fragment_exclude:
-        description: 'Defconfig fragments to exclude (space- or comma-separated names)'
+        description: 'Defconfig fragments to exclude'
         required: false
         default: ""
       append_build_env:
@@ -106,7 +106,7 @@ jobs:
           sudo swapon /swapfile
           free -h
 
-      - name: Build kernel & EXACT Root Magic Bypass!
+      - name: Build kernel & Root Bypass!
         env:
           KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
         run: |
@@ -116,10 +116,10 @@ jobs:
             ksu_pid=$!
           fi
           
-          # --- Native Python Injector Setup exactly used in your Success Log ! ---
           mkdir -p work
           INJECT_SCRIPT="$GITHUB_WORKSPACE/work/patch_inject.sh"
           
+          # Exact injection setup mimicking your log structure (Without ANY deviations!)
           cat << 'INJECT_EOF' > "$INJECT_SCRIPT"
           #!/bin/bash
           export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH"
@@ -158,7 +158,6 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
           
           echo "=== 4. Modifying Config / Injecting Engine Rules! ==="
-          # Exact injection to override default android structure directly 
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
           cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
           CONFIG_KSU=y
@@ -181,6 +180,9 @@ jobs:
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           CONFIG_KSU_SUSFS_ENABLE_LOG=n
+          # --- Enabling MGLRU explicitly for compiling ---
+          CONFIG_LRU_GEN=y
+          CONFIG_LRU_GEN_ENABLED=y
           KSUCONF
           
           echo "✅ All ReSukiSU + System SUSFS modules applied directly on tree!"
@@ -188,7 +190,7 @@ jobs:
 
           chmod +x "$INJECT_SCRIPT"
           
-          # Force Inject variable overrides to the system Engine hook : 
+          # Original Developer Build Hook Config Export! (Kept exact copy!)
           export APPEND_BUILD_ENV="PRE_DEFCONFIG_CMDS=$INJECT_SCRIPT,KMI_SYMBOL_LIST_STRICT_MODE=0,UPDATE_SYMBOL_LIST=1"
           
           chmod +x ./build-kernel.sh
@@ -264,6 +266,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar/ReSukiSU Kernel $tag" \
-              --notes "Compiled 5.10 Build. MGLRU, SUSFS V2 module spoofing bypassed manually applied natively! ✅  $(date -u '+%Y-%m-%d UTC')" \
+              --notes "Compiled 5.10 Build. SUSFS spoofing logic bypassed and manual patch system active! MGLRU Config applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
               "${assets[@]}"
           fi
