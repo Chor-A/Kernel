@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Mirror the KernelSU (KOWX712) ksud binaries from the latest successful GitHub
+# Mirror the ReSukiSU ksud binaries from the latest successful GitHub
 # Actions run into ksu-<artifact>.zip files, ready for the durable prebuilts
 # release. build-kernel.yml consumes these via kernelsu-fetch.sh's
 # KSU_PREBUILT_BASE fallback, which expects ksu-<artifact>.zip naming, so the
 # 90-day actions-artifact expiry never blocks a kernel build.
 #
-# KernelSU is built into the CloudFox kernel source itself, so only ksud is
-# mirrored (it swaps the kernel image on device); the kernelsu.ko LKM and
-# ksuinit artifacts are no longer needed.
+# ReSukiSU is built into the Templar kernel source itself, so only ksud is
+# mirrored (it swaps the kernel image on device).
 #
 # Outputs are written to OUT_DIR (default: ./ksu-assets):
 #   ksu-ksud-aarch64-linux-android.zip ksu-ksud-armv7-linux-androideabi.zip
 
-KSU_OWNER=${KSU_OWNER:-KOWX712}
-KSU_REPO=${KSU_REPO:-KernelSU}
-KSU_BRANCH=${KSU_BRANCH:-master}
+# ==> SETTINGS FOR RESUKISU INTEGRATION <==
+KSU_OWNER=${KSU_OWNER:-ReSukiSU}
+KSU_REPO=${KSU_REPO:-ReSukiSU}
+KSU_BRANCH=${KSU_BRANCH:-main} # ReSukiSU uses 'main', not 'master'
 KSU_WANT=${KSU_WANT:-'ksud-*'}
 OUT_DIR=${OUT_DIR:-$PWD/ksu-assets}
 GITHUB_TOKEN=${GITHUB_TOKEN:-}
