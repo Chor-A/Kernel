@@ -1,5 +1,5 @@
---- a/KernelSU/kernel/supercall/dispatch.c
-+++ b/KernelSU/kernel/supercall/dispatch.c
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
 @@ -7,5 +7,6 @@
  #include <linux/version.h>
  #ifdef CONFIG_KSU_SUSFS
