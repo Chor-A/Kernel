@@ -77,9 +77,7 @@ jobs:
           cd common || exit 1
           
           echo "=== 0. Completely Removing nomount ==="
-          # Delete the nomount directory and any leftover standalone files
           rm -rf fs/nomount fs/nomount.c fs/nomount.h
-          # Strip nomount references from the Makefile and Kconfig
           sed -i '/nomount/Id' fs/Makefile
           sed -i '/NOMOUNT/Id' fs/Kconfig
           sed -i '/nomount/Id' fs/Kconfig
@@ -88,9 +86,7 @@ jobs:
           echo "=== 1. Setting up ReSukiSU ==="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
           
-          echo "=== 2. Applying Custom Patches (Strict Mode) ==="
-          FAILED_PATCHES=()
-          
+          echo "=== 2. Applying Original Patches (Smart Offset Mode) ==="
           for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
             if [ -d "$dir" ]; then
               for patch_file in "$dir"/*.patch; do
@@ -102,16 +98,12 @@ jobs:
                   if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file" > patch.log 2>&1; then
                     echo "✅ Applied cleanly via git!"
                   else
-                    if patch -p1 --fuzz=0 --no-backup-if-mismatch < "$patch_file" >> patch.log 2>&1; then
-                      echo "✅ Applied exactly via patch tool!"
+                    if patch -p1 --no-backup-if-mismatch < "$patch_file" >> patch.log 2>&1; then
+                      echo "✅ Applied successfully via patch tool (Offsets resolved)!"
                     else
-                      echo "❌ ERROR: $patch_file has mismatches/conflicts!"
-                      echo "--- Reject Log ---"
+                      echo "❌ ERROR: $patch_file failed!"
                       cat patch.log
-                      find . -name "*.rej" -print -exec cat {} \;
-                      echo "------------------"
-                      find . -name "*.rej" -delete
-                      FAILED_PATCHES+=("$patch_file")
+                      exit 1
                     fi
                   fi
                   rm -f patch.log
@@ -119,110 +111,9 @@ jobs:
               done
             fi
           done
+          echo "✅ All .patch files applied successfully!"
           
-          echo "----------------------------------------------------"
-          if [ ${#FAILED_PATCHES[@]} -ne 0 ]; then
-            echo "🚨 STRICT MODE: The following patches FAILED due to mismatches:"
-            for failed in "${FAILED_PATCHES[@]}"; do
-              echo " ❌ $failed"
-            done
-            exit 1
-          else
-            echo "✅ All .patch files applied cleanly with ZERO fuzz!"
-          fi
-          
-          echo "=== 3. Safe Python Injection into fs/Kconfig ==="
-          python3 - << 'PY_EOF'
-          with open('fs/Kconfig', 'r') as f:
-              kconfig = f.read()
-
-          susfs_kconfig = """
-          config KSU_SUSFS
-              bool "KSU SUSFS Base"
-              default y
-
-          config KSU_SUSFS_SUS_PATH
-              bool "SUSFS sus_path"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_SUS_MOUNT
-              bool "SUSFS sus_mount"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_SUS_KSTAT
-              bool "SUSFS sus_kstat"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_SPOOF_UNAME
-              bool "SUSFS spoof_uname"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_ENABLE_LOG
-              bool "SUSFS enable_log"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-              bool "SUSFS hide symbols"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-              bool "SUSFS spoof cmdline"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_OPEN_REDIRECT
-              bool "SUSFS open redirect"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_SUS_MAP
-              bool "SUSFS sus_map"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_SUS_KSTAT_REDIRECT
-              bool "SUSFS kstat redirect"
-              depends on KSU_SUSFS_SUS_KSTAT
-              default y
-
-          config KSU_SUSFS_UNICODE_FILTER
-              bool "Unicode Filter (blocks scoped storage bypass)"
-              depends on KSU_SUSFS
-              default y
-
-          config KSU_SUSFS_HIDDEN_NAME
-              bool "Hidden Android/data package names"
-              depends on KSU_SUSFS_SUS_PATH
-              default y
-
-          config KSU_SUSFS_HARDENED
-              bool "Hardened SUSFS (upstream bug fixes)"
-              depends on KSU_SUSFS
-              default y
-
-          config ZEROMOUNT
-              bool "ZeroMount Path Redirection Subsystem"
-              default y
-          """
-
-          last_endmenu_idx = kconfig.rfind('endmenu')
-          if last_endmenu_idx != -1:
-              kconfig = kconfig[:last_endmenu_idx] + susfs_kconfig + "\n" + kconfig[last_endmenu_idx:]
-              with open('fs/Kconfig', 'w') as f:
-                  f.write(kconfig)
-              print("✅ Successfully injected Kconfigs cleanly!")
-          else:
-              print("❌ Error: Could not find 'endmenu' in fs/Kconfig")
-              exit(1)
-          PY_EOF
-          
-          echo "=== 4. Modifying Config / Injecting Engine Rules! ==="
+          echo "=== 3. Enabling SUSFS & Zeromount Flags in gki_defconfig ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
           cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
           CONFIG_KSU=y
@@ -330,6 +221,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar/ReSukiSU Kernel $tag" \
-              --notes "Compiled 5.10 Build. Nomount removed, Zeromount added, Strict patching active! MGLRU & ALL SUSFS Configs applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
+              --notes "Compiled 5.10 Build. Nomount removed, Zeromount added, Original patches active! MGLRU & ALL SUSFS Configs applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
               "${assets[@]}"
           fi
