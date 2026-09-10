@@ -13,11 +13,11 @@ name: build-kernel
       kernel_repo:
         description: 'Kernel source repository (full URL or scp-style remote)'
         required: false
-        default: ""
+        default: "https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git"
       kernel_branch:
         description: 'Kernel source branch'
         required: false
-        default: ""
+        default: "Linux1-Staging"
       kernel_commit:
         description: 'Kernel source commit'
         required: false
@@ -107,7 +107,7 @@ jobs:
           sudo swapon /swapfile
           free -h
 
-      - name: Build kernel
+      - name: Build kernel (With Custom Patches & Resukisu Injection)
         env:
           KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
         run: |
@@ -119,7 +119,40 @@ jobs:
             ./build/kernelsu-fetch.sh &
             ksu_pid=$!
           fi
+          
+          # ================== AUTOMATED KERNEL PATCHING & RESUKISU (KERNELSU) LOGIC ==================
+          # Export workflow's dir securely. This bash structure dynamically fires exactly 
+          # within the GKI compile root just right before build begins its loop on fresh clone. 
+          export WORKSPACE_DIR="$PWD"
+          cat << 'HOOK_EOF' > custom_patch_ksu.sh
+          echo "=====[ APPLYING ALL PATCH FILES & RESUKISU/KERNELSU INTEGRATION ]====="
+          # -> Automatically pull and execute resukisu script within GKI base...
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash - || echo "!! KernelSU Fetch Error Occurred !!"
+          
+          # -> Verify local repo "patches/" foldr under github Action exists and inject ALL matches!
+          PATCH_LOC="$WORKSPACE_DIR/.github/workflows/patches"
+          if [ -d "$PATCH_LOC" ]; then
+            for local_patch in "$PATCH_LOC"/*.patch; do
+              if [ -f "$local_patch" ]; then
+                echo "=> Modifying tree -> Attempting patching with source file: $(basename $local_patch)"
+                patch -p1 --forward < "$local_patch" || echo "[Warning] Conflicting chunks applying: $(basename $local_patch)! Code Continues."
+              fi
+            done
+          else
+            echo "=> Patches repository directory (.github/workflows/patches) could not be located; Skipping module."
+          fi
+          echo "=========================================================================="
+          HOOK_EOF
+          chmod +x custom_patch_ksu.sh
+          
+          # Inject hooks intelligently by using 'sed' script tool string modification right onto cloudfox compile shell execution! 
+          sed -i -e '/build\/build\.sh/i source '"$WORKSPACE_DIR"'/custom_patch_ksu.sh' ./build-kernel.sh
+          # (FallBack logic) Catch normal unreferenced raw make calls within some cloudfox variations incase "build/build.sh" behaves custom... 
+          sed -i -e '/\s\s*make\s\s*O=/i source '"$WORKSPACE_DIR"'/custom_patch_ksu.sh' ./build-kernel.sh
+          # ===========================================================================================
+
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
+          
           if [ -n "$ksu_pid" ]; then
             # A ksud mirror hiccup must not discard the finished ~180 minute
             # kernel build; record the failure and let the pack step skip the
