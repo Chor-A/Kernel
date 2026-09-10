@@ -39,15 +39,15 @@ name: build-kernel
         required: false
         default: ""
       append_build_env:
-        description: 'Extra KEY=VALUE pairs appended to build.config.cloudfox (comma-separated, e.g. "TRIM_UNUSED_KSYMS=1,LOCALVERSION=-vanilla"; sourced by build.sh)'
+        description: 'Extra KEY=VALUE pairs appended to build.config.cloudfox'
         required: false
         default: ""
       append_config:
-        description: 'Extra literal CONFIG_* lines injected into the defconfig (comma-separated, e.g. "CONFIG_KERNELSU=y,# CONFIG_X is not set")'
+        description: 'Extra literal CONFIG_* lines injected into the defconfig (You NO LONGER need to put SUSFS flags here!)'
         required: false
         default: ""
       ccache:
-        description: 'Accelerate with ccache. Branch-agnostic: objects shared across kernel branches/commits are reused from a cross-run cache; first run is cold, later runs (incl. different branches) get partial hits.'
+        description: 'Accelerate with ccache. Branch-agnostic cache enabled.'
         type: boolean
         default: true
 
@@ -113,26 +113,77 @@ jobs:
             ksu_pid=$!
           fi
           
-          # --- Native Google-ACK injection hook (Your Required Changes ONLY!) ---
+          # --- Injection of Permanent Core Requirements & SUSFS Configuration! ---
+          # Yeh script lines automatically filters headings and merges all flags via cloudfox param handler.
+          SUS_ISOLATION_FLAGS=$(cat << 'SUS_EOF' | grep -v '^#' | grep '\S' | paste -sd, -
+          # --- Core Requirements ---
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_TMPFS_XATTR=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          
+          # --- Advanced Isolation & Path Hiding ---
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          
+          # --- Mount Population & Tracking Rules ---
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          
+          # --- Active Try-Umount Engine ---
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          
+          # --- Spoofing & Identity Masking ---
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_ENV=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_SPOOF_AVC_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_PORTS=y
+          
+          # --- System Executables & Logging ---
+          CONFIG_KSU_SUSFS_SUS_SU=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          SUS_EOF
+          )
+          
+          # Dynamically push merged custom flags list onto existing action triggers parameters:
+          if [ -n "$APPEND_CONFIG" ]; then
+             export APPEND_CONFIG="$SUS_ISOLATION_FLAGS,$APPEND_CONFIG"
+          else
+             export APPEND_CONFIG="$SUS_ISOLATION_FLAGS"
+          fi
+          # ----------------------------------------------------------------------
+
+
+          # --- Native Google-ACK injection hook (Root patching via PATH overrides) ---
           mkdir -p work
           INJECT_SCRIPT="$GITHUB_WORKSPACE/work/patch_inject.sh"
           cat << 'EOF' > "$INJECT_SCRIPT"
-          echo "==== Applying ReSukiSU ===="
+          
+          # HACK TO BYPASS GOOGLE HERMETIC ENVIRONMENT RESTRICTIONS (Prevents missing commands!)
+          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+
+          echo "==== Applying ReSukiSU Modules===="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
           
           PATCH_DIR="$GITHUB_WORKSPACE/.github/workflows/patches"
           if [ -d "$PATCH_DIR" ]; then
-             echo "==== Applying Patches Folder ===="
+             echo "==== Applying WorkFlow Directory Patches ===="
              for patch_file in "$PATCH_DIR"/*.patch; do
                [ -f "$patch_file" ] || continue
-               echo "Applying patch: $(basename "$patch_file")"
+               echo "Applying Native patch source -> : $(basename "$patch_file")"
                patch -p1 --forward < "$patch_file" || true
              done
           fi
           EOF
           chmod +x "$INJECT_SCRIPT"
           
-          # Native method of the professional script to inject scripts into compiling kernel dir:
           if [ -z "${{ inputs.append_build_env }}" ]; then
             export APPEND_BUILD_ENV="PRE_DEFCONFIG_CMDS=$INJECT_SCRIPT"
           else
@@ -211,8 +262,8 @@ jobs:
             gh release upload "$tag" --clobber "${assets[@]}"
           else
             gh release create "$tag" \
-              --title "CloudFox kernel build $tag" \
-              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} via Google's unmodified build.sh. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --title "Templar SUSFS 5.10 Build $tag" \
+              --notes "Steambot12 Kernel Compiled successfully via Custom SUSFS Integrations on ReSukiSU + System Mglru patches ✅ $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
           echo "release $tag updated"
