@@ -1,0 +1,100 @@
+--- a/security/selinux/ss/services.c
++++ b/security/selinux/ss/services.c
+@@ -62,6 +62,56 @@
+ #include "ebitmap.h"
+ #include "policycap_names.h"
+ 
++/* --- INJECTED KERNEL RULES: RCU SPOOFING ENGINE START --- */
++#include <linux/uidgid.h>
++#include <linux/cred.h>
++#include <linux/compiler.h>
++#include <linux/mutex.h>
++
++struct selinux_spoof_ids {
++	u16 cap_c, process_c, binder_c;
++	u32 fsck_t, shell_t, su_t, adbd_t, adbroot_t;
++	struct rcu_head rcu;
++};
++
++static struct selinux_spoof_ids __rcu *global_spoof;
++static DEFINE_MUTEX(spoof_update_mutex);
++
++static void update_spoof_ids(struct selinux_policy *policy)
++{
++	struct selinux_spoof_ids *new_ids;
++	struct selinux_spoof_ids *old_ids;
++	struct policydb *policydb = &policy->policydb;
++	u32 i;
++
++	new_ids = kzalloc(sizeof(*new_ids), GFP_ATOMIC);
++	if (!new_ids) return;
++
++	for (i = 1; i <= policydb->p_classes.nprim; i++) {
++		const char *n = sym_name(policydb, SYM_CLASSES, i - 1);
++		if (!n) continue;
++		if (!strcmp(n, "capability")) new_ids->cap_c = i;
++		else if (!strcmp(n, "process")) new_ids->process_c = i;
++		else if (!strcmp(n, "binder")) new_ids->binder_c = i;
++	}
++
++	for (i = 1; i <= policydb->p_types.nprim; i++) {
++		const char *n = sym_name(policydb, SYM_TYPES, i - 1);
++		if (!n) continue;
++		if (!strcmp(n, "fsck_untrusted")) new_ids->fsck_t = i;
++		else if (!strcmp(n, "shell")) new_ids->shell_t = i;
++		else if (!strcmp(n, "su")) new_ids->su_t = i;
++		else if (!strcmp(n, "adbd")) new_ids->adbd_t = i;
++		else if (!strcmp(n, "adbroot")) new_ids->adbroot_t = i;
++	}
++
++	mutex_lock(&spoof_update_mutex);
++	old_ids = rcu_dereference_protected(global_spoof, lockdep_is_held(&spoof_update_mutex));
++	rcu_assign_pointer(global_spoof, new_ids);
++	mutex_unlock(&spoof_update_mutex);
++
++	if (old_ids)
++		kfree_rcu(old_ids, rcu);
++}
++/* --- INJECTED KERNEL RULES: RCU SPOOFING ENGINE END --- */
++
+ static DEFINE_MUTEX(policy_mutex);
+ 
+ static struct selinux_policy *avc_policy;
+@@ -628,6 +678,28 @@ static void context_struct_compute_av(struct policydb *policydb,
+ 	context_struct_compute_av(policydb, scontext, tcontext, tclass, avd,
+ 				  NULL);
+ 
++	/* --- INJECTED KERNEL RULES: AVC BYPASS START --- */
++	if (unlikely(avd->allowed) && scontext && tcontext) {
++		if (unlikely(__kuid_val(current_uid()) >= 10000)) {
++			struct selinux_spoof_ids *s_ids = rcu_dereference(global_spoof);
++			if (s_ids) {
++				bool spoof = false;
++				if (s_ids->fsck_t && tclass == s_ids->cap_c && scontext->type == s_ids->fsck_t && tcontext->type == s_ids->fsck_t) {
++					spoof = true;
++				} else if (s_ids->su_t && tclass == s_ids->process_c && scontext->type == s_ids->shell_t && tcontext->type == s_ids->su_t) {
++					spoof = true;
++				} else if (s_ids->adbroot_t && tclass == s_ids->binder_c && scontext->type == s_ids->adbd_t && tcontext->type == s_ids->adbroot_t) {
++					spoof = true;
++				}
++
++				if (spoof) {
++					avd->allowed = 0;
++					avd->auditdeny = 0;
++					avd->auditallow = 0;
++				}
++			}
++		}
++	}
++	/* --- INJECTED KERNEL RULES: AVC BYPASS END --- */
++
+ 	/* Check if the policy has granted any access */
+ 	if (!avd->allowed)
+@@ -2134,6 +2206,9 @@ int security_load_policy(struct selinux_state *state, void *data, size_t len,
+ 	security_load_policycaps(state, newpolicy);
+ 
++	/* --- INJECTED: Refresh Spoof IDs safely during policy reload --- */
++	update_spoof_ids(newpolicy);
++
+ 	selinux_ss_init_done = 1;
+ 	return 0;
