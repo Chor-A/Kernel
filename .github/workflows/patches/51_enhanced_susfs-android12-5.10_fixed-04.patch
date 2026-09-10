@@ -295,7 +295,7 @@ diff -ruN post-upstream/fs/namespace.c work-50/fs/namespace.c
  	kfree_const(mnt->mnt_devname);
  #endif
 +out_free_id:
-+	mnt_free_id(mnt);
+ 	mnt_free_id(mnt);
  out_free_cache:
  	kmem_cache_free(mnt_cache, mnt);
  	return NULL;
@@ -344,7 +344,7 @@ diff -ruN post-upstream/fs/namespace.c work-50/fs/namespace.c
  	kfree_const(mnt->mnt_devname);
  #endif
 +out_free_id:
-+	mnt_free_id(mnt);
+ 	mnt_free_id(mnt);
  out_free_cache:
  	kmem_cache_free(mnt_cache, mnt);
  	return NULL;
@@ -783,41 +783,53 @@ diff -ruN post-upstream/fs/proc/fd.c work-50/fs/proc/fd.c
 diff -ruN post-upstream/fs/proc/task_mmu.c work-50/fs/proc/task_mmu.c
 --- post-upstream/fs/proc/task_mmu.c	2026-03-05 15:17:39.736946212 +0100
 +++ work-50/fs/proc/task_mmu.c	2026-03-05 12:35:34.886648562 +0100
-@@ -339,8 +339,9 @@
+@@ -334,6 +334,30 @@
  	if (file) {
  		struct inode *inode = file_inode(vma->vm_file);
- #ifdef CONFIG_KSU_SUSFS_SUS_MAP
--		if (unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
--			susfs_is_current_proc_umounted()))
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 +		if (inode->i_mapping &&
 +			unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
 +			susfs_is_current_proc_umounted_app()))
- 		{
- 			seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
- 			seq_put_hex_ll(m, NULL, vma->vm_start, 8);
-@@ -359,7 +360,10 @@
- 		}
- #endif
- #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
--		if (unlikely(test_bit(AS_FLAGS_SUS_KSTAT, &inode->i_mapping->flags))) {
++		{
++			seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
++			seq_put_hex_ll(m, NULL, vma->vm_start, 8);
++			seq_put_hex_ll(m, "-", VMA_PAD_START(vma), 8);
++			seq_putc(m, ' ');
++			seq_putc(m, flags & VM_READ ? 'r' : '-');
++			seq_putc(m, flags & VM_WRITE ? 'w' : '-');
++			seq_putc(m, flags & VM_EXEC ? 'x' : '-');
++			seq_putc(m, flags & VM_MAYSHARE ? 's' : 'p');
++			seq_puts(m, " 00000000 00:00 0");
++			goto done;
++		}
++#endif
++#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 +		if (inode->i_mapping &&
 +			unlikely(test_bit(AS_FLAGS_SUS_KSTAT, &inode->i_mapping->flags) &&
 +			susfs_is_current_proc_umounted_app()))
 +		{
- 			susfs_sus_ino_for_show_map_vma(inode->i_ino, &dev, &ino);
- 			goto bypass_orig_flow;
- 		}
++			susfs_sus_ino_for_show_map_vma(inode->i_ino, &dev, &ino);
++			pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
++			goto bypass_orig_flow;
++		}
++#endif
+ 		dev = inode->i_sb->s_dev;
+ 		ino = inode->i_ino;
+ 		pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
+ 	}
++
++#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
++bypass_orig_flow:
++#endif
  
-@@ -1003,14 +1010,18 @@
+ 	start = vma->vm_start;
+ 	end = VMA_PAD_START(vma);
+ 	show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
+@@ -961,6 +985,18 @@
+ 	hold_task_mempolicy(priv);
  
  	for (vma = priv->mm->mmap; vma;) {
- #ifdef CONFIG_KSU_SUSFS_SUS_MAP
--		if (vma->vm_file &&
--			unlikely(test_bit(AS_FLAGS_SUS_MAP, &file_inode(vma->vm_file)->i_mapping->flags) &&
--			susfs_is_current_proc_umounted()))
--		{
--			memset(&mss, 0, sizeof(mss));
--			goto bypass_orig_flow;
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 +		if (vma->vm_file) {
 +			struct inode *inode = file_inode(vma->vm_file);
 +			if (inode->i_mapping &&
@@ -827,24 +839,33 @@ diff -ruN post-upstream/fs/proc/task_mmu.c work-50/fs/proc/task_mmu.c
 +				memset(&mss, 0, sizeof(mss));
 +				goto bypass_orig_flow;
 +			}
- 		}
- #endif
-+
++		}
++#endif
  		smap_gather_stats(vma, &mss, 0);
- #ifdef CONFIG_KSU_SUSFS_SUS_MAP
- bypass_orig_flow:
-@@ -1801,8 +1812,9 @@
- 		vma = find_vma(mm, start_vaddr);
- 		if (vma && vma->vm_file) {
- 			struct inode *inode = file_inode(vma->vm_file);
--			if (unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
--				susfs_is_current_proc_umounted()))
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++bypass_orig_flow:
++#endif
+ 		last_vma_end = vma->vm_end;
+ 
+ 		/*
+@@ -1714,6 +1750,16 @@
+ 		ret = walk_page_range(mm, start_vaddr, end, &pagemap_ops, &pm);
+ 		mmap_read_unlock(mm);
+ 		start_vaddr = end;
++
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++		vma = find_vma(mm, start_vaddr);
++		if (vma && vma->vm_file) {
++			struct inode *inode = file_inode(vma->vm_file);
 +			if (inode->i_mapping &&
 +				unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
 +				susfs_is_current_proc_umounted_app()))
- 			{
- 				pm.buffer->pme = 0;
- 			}
++				pm.buffer->pme = 0;
++		}
++#endif
+ 
+ 		len = min(count, PM_ENTRY_BYTES * pm.pos);
+ 		if (copy_to_user(buf, pm.buffer, len)) {
 diff -ruN post-upstream/fs/proc_namespace.c work-50/fs/proc_namespace.c
 --- post-upstream/fs/proc_namespace.c	2026-03-05 15:17:39.737199137 +0100
 +++ work-50/fs/proc_namespace.c	2026-03-05 12:35:34.886933608 +0100
@@ -1363,7 +1384,7 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
 +			}
 +		}
 +#endif
-+		SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', fi->nodeid: %llu, fi->inode.i_ino: %lu, fi->inode.i_mapping->flags: 0x%lx\n",
++		SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', fi->nodeid: %llu, fi->inode.i_ino: %lu, fi->inode.i_mapping->flags: 0x%lx\n", 
  					info.target_pathname, fi->nodeid, fi->inode.i_ino, fi->inode.i_mapping->flags);
  		info.err = 0;
  		goto out_path_put_path;
@@ -1398,7 +1419,7 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
 +		}
 +	}
 +#endif
- 	SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', ino: '%lu', inode->i_mapping->flags: 0x%lx\n",
+ 	SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', ino: '%lu', inode->i_mapping->flags: 0x%lx\n", 
  				info.target_pathname, info.target_ino, inode->i_mapping->flags);
  	info.err = 0;
 @@ -117,6 +382,10 @@
@@ -1968,8 +1989,8 @@ diff -ruN post-upstream/include/linux/susfs.h work-50/include/linux/susfs.h
 +	unsigned long                           spoofed_blksize;
 +	unsigned long long                      spoofed_blocks;
 +	int                                     err;
- };
- #endif
++};
++#endif
 +#endif
  
  /* spoof_uname */
@@ -2004,7 +2025,7 @@ diff -ruN post-upstream/include/linux/susfs.h work-50/include/linux/susfs.h
 +bool susfs_is_hidden_name(const char *name, int namlen, uid_t caller_uid);
 +bool susfs_is_hidden_ino(struct super_block *sb, unsigned long ino);
 +#endif
-+
+ 
  /* susfs_init */
  void susfs_init(void);
  
