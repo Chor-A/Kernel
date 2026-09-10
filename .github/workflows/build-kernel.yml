@@ -31,7 +31,7 @@ name: build-kernel
           - clang 14
         default: "clang 19"
       pack_flashable:
-        description: 'Build a universal self-patching flashable zip (on-device kernel replacement via ksud)'
+        description: 'Build a universal self-patching flashable zip (on-device kernel replacement)'
         type: boolean
         default: true
       defconfig_fragment_exclude:
@@ -43,11 +43,11 @@ name: build-kernel
         required: false
         default: ""
       append_config:
-        description: 'Extra literal CONFIG_* lines injected into the defconfig (comma-separated, e.g. "CONFIG_KERNELSU=y,# CONFIG_X is not set")'
+        description: 'Extra literal CONFIG_* lines injected into the defconfig'
         required: false
         default: ""
       ccache:
-        description: 'Accelerate with ccache. Branch-agnostic: objects shared across kernel branches/commits are reused from a cross-run cache; first run is cold, later runs (incl. different branches) get partial hits.'
+        description: 'Accelerate with ccache. Branch-agnostic: objects shared across kernel branches/commits are reused from a cross-run cache.'
         type: boolean
         default: true
 
@@ -87,10 +87,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: work/.ccache
-          # Branch-agnostic: the primary key includes the branch, but
-          # restore-keys fall back to the clang/repo prefix so a *different*
-          # branch's run shares the same bucket. ccache hashes each object's
-          # content, so shared kernel source across branches still hits.
           key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}
           restore-keys: |
             cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
@@ -107,35 +103,32 @@ jobs:
           sudo swapon /swapfile
           free -h
 
-      - name: Build kernel (With Custom Patches & Resukisu Injection)
+      - name: Build kernel (With Custom Patches & ReSukiSU Injection)
         env:
           KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
         run: |
-          # The ksud fetch is network-bound and independent of the kernel build
-          # (it only needs the repo checkout); overlap it with the build instead
-          # of serializing it behind the ~180 minute compile.
+          # Fetch packing scripts asynchronously
           ksu_pid=""
           if [ "${{ inputs.pack_flashable }}" == "true" ]; then
             ./build/kernelsu-fetch.sh &
             ksu_pid=$!
           fi
           
-          # ================== AUTOMATED KERNEL PATCHING & RESUKISU (KERNELSU) LOGIC ==================
-          # Export workflow's dir securely. This bash structure dynamically fires exactly 
-          # within the GKI compile root just right before build begins its loop on fresh clone. 
+          # ================== AUTOMATED KERNEL PATCHING & RESUKISU LOGIC ==================
+          # Export workflow's dir securely to run before compile loop.
           export WORKSPACE_DIR="$PWD"
           cat << 'HOOK_EOF' > custom_patch_ksu.sh
-          echo "=====[ APPLYING ALL PATCH FILES & RESUKISU/KERNELSU INTEGRATION ]====="
-          # -> Automatically pull and execute resukisu script within GKI base...
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash - || echo "!! KernelSU Fetch Error Occurred !!"
+          echo "=====[ APPLYING ALL PATCH FILES & RESUKISU INTEGRATION ]====="
+          # -> Pull ReSukiSU from official repo
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || echo "!! ReSukiSU Fetch Error Occurred !!"
           
-          # -> Verify local repo "patches/" foldr under github Action exists and inject ALL matches!
+          # -> Verify local repo "patches/" folder under github Actions exists and inject ALL matches!
           PATCH_LOC="$WORKSPACE_DIR/.github/workflows/patches"
           if [ -d "$PATCH_LOC" ]; then
             for local_patch in "$PATCH_LOC"/*.patch; do
               if [ -f "$local_patch" ]; then
-                echo "=> Modifying tree -> Attempting patching with source file: $(basename $local_patch)"
-                patch -p1 --forward < "$local_patch" || echo "[Warning] Conflicting chunks applying: $(basename $local_patch)! Code Continues."
+                echo "=> Modifying tree -> Attempting patching with source file: $(basename "$local_patch")"
+                patch -p1 --forward < "$local_patch" || echo "[Warning] Conflicting chunks applying: $(basename "$local_patch")! Code Continues."
               fi
             done
           else
@@ -145,19 +138,16 @@ jobs:
           HOOK_EOF
           chmod +x custom_patch_ksu.sh
           
-          # Inject hooks intelligently by using 'sed' script tool string modification right onto cloudfox compile shell execution! 
+          # Inject script execution exactly into cloudfox script runner directly via sed modifications!
           sed -i -e '/build\/build\.sh/i source '"$WORKSPACE_DIR"'/custom_patch_ksu.sh' ./build-kernel.sh
-          # (FallBack logic) Catch normal unreferenced raw make calls within some cloudfox variations incase "build/build.sh" behaves custom... 
+          # Catch other make environments conditionally.
           sed -i -e '/\s\s*make\s\s*O=/i source '"$WORKSPACE_DIR"'/custom_patch_ksu.sh' ./build-kernel.sh
           # ===========================================================================================
 
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
           
           if [ -n "$ksu_pid" ]; then
-            # A ksud mirror hiccup must not discard the finished ~180 minute
-            # kernel build; record the failure and let the pack step skip the
-            # flashable zip while the kernel release still publishes.
-            wait "$ksu_pid" || echo "::warning::ksud fetch failed; flashable zip will be skipped"
+            wait "$ksu_pid" || echo "::warning::Flash tool binaries fetch failed; flashable zip will be skipped"
           fi
 
       - name: Save ccache cache
@@ -173,7 +163,7 @@ jobs:
           set -euo pipefail
           if [ ! -f "$PWD/kernelsu/ksud-aarch64-linux-android" ] || \
              [ ! -f "$PWD/kernelsu/ksud-armv7-linux-androideabi" ]; then
-            echo "ksud binaries missing (fetch failed); skipping flashable zip"
+            echo "tools binaries missing (fetch failed); skipping flashable zip"
             exit 0
           fi
           kernel_img=$(find work/dist -name 'Image' -print -quit)
@@ -198,8 +188,6 @@ jobs:
         with:
           name: kernel-flash-zip
           path: work/pkg/cloudfox-kernel-flash.zip
-          # warn (not error): the pack step skips cleanly when the ksud fetch
-          # failed, and a genuinely failed pack aborts the job before this step.
           if-no-files-found: warn
 
       - name: Publish release
@@ -227,8 +215,8 @@ jobs:
             gh release upload "$tag" --clobber "${assets[@]}"
           else
             gh release create "$tag" \
-              --title "CloudFox kernel build $tag" \
-              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} via Google's unmodified build.sh. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --title "CloudFox ReSukiSU build $tag" \
+              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
           echo "release $tag updated"
