@@ -1,4 +1,4 @@
-name: Build Kernel
+Name: Build Kernel
 
 on:
   workflow_dispatch:
@@ -85,7 +85,10 @@ jobs:
           sed -i '/nomount/Id' fs/Kconfig
           echo "✅ nomount completely removed from tree!"
           
-          echo "=== 1. Applying Custom Patches (mglru, services, etc.) ==="
+          echo "=== 1. Setting up ReSukiSU ==="
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
+          
+          echo "=== 2. Applying Custom Patches (mglru, services, etc.) ==="
           for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
             if [ -d "$dir" ]; then
               for patch_file in "$dir"/*.patch; do
@@ -105,9 +108,6 @@ jobs:
             fi
           done
           echo "✅ All .patch files applied!"
-          
-          echo "=== 2. Setting up ReSukiSU ==="
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
           
           echo "=== 3. Modifying Config / Injecting Engine Rules! ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
