@@ -81,9 +81,6 @@ jobs:
         if: steps.released.outputs.wanted != 'nothing to do'
         run: |
           set -euo pipefail
-          # The three prebuilts clone from googlesource.com independently and
-          # are network-bound, so fetch them concurrently instead of one step
-          # at a time. Each skips when its asset is already released.
           fetch_clang() {
             if [ "$FORCE" != "1" ] && ! grep -qx "$CLANG_ASSET" /tmp/wanted; then
               echo "clang already released, skipping"
@@ -147,9 +144,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The fetch step only materializes *.tar.zst files for assets that
-          # are missing from the release, so the on-disk set IS the set to
-          # upload: no second release-asset query needed.
           assets=()
           for f in *.tar.zst; do
             [ -f "$f" ] && assets+=("$f")
@@ -158,18 +152,16 @@ jobs:
             echo "no assets to upload"
             exit 0
           fi
-          # Ensure the release exists, tolerating the parallel kernelsu job
-          # creating it concurrently (both jobs run on the same dispatch).
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --latest=false \
               --title "Kernel build prebuilts" \
-              --notes "Prebuilt components consumed by build-kernel.sh, fetched from the Google ACK sources (clang, kernel-build-tools and build-tools; clang version configurable via workflow dropdown, default clang 19, bundled under a legacy directory name so pinned build scripts resolve it). The Google build scripts and gcc host sysroot are shipped in the repository itself." \
+              --notes "Prebuilt components consumed by build-kernel.sh, fetched from the Google ACK sources (clang, kernel-build-tools and build-tools). " \
               "${assets[@]}" >/dev/null 2>&1 || true
           fi
           gh release upload "$RELEASE_TAG" --clobber "${assets[@]}"
           echo "release $RELEASE_TAG updated"
 
-  kernelsu:
+  resukisu:
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
@@ -177,7 +169,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Mirror ksud binaries from upstream Actions run
+      - name: Mirror flash tools (ksud/ReSukiSU) binaries
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -188,15 +180,16 @@ jobs:
             if [ -n "$existing" ]; then
               missing=$(for a in $needed; do printf '%s\n' "$existing" | grep -qx "$a" || echo "$a"; done)
               if [ -z "$missing" ]; then
-                echo "ksud assets already released, skipping (set force to re-mirror)"
+                echo "Flash tool assets already released, skipping (set force to re-mirror)"
                 exit 0
               fi
-              echo "missing ksud assets: $missing"
+              echo "missing assets: $missing"
             fi
           fi
+          # Aapke local script ko run karta hai: MAKE SURE YOU EDIT this .sh inside your repo to target ReSukiSU URLs!
           ./build/kernelsu-mirror.sh
 
-      - name: Publish ksu assets to prebuilts release
+      - name: Publish ReSukiSU tools to prebuilts release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -204,12 +197,12 @@ jobs:
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --latest=false \
               --title "Kernel build prebuilts" \
-              --notes "Prebuilt components consumed by build-kernel.sh and the build-kernel workflow: clang toolchain, kernel-build-tools, build-tools and mirrored ksud binaries (arm64/armv7) that replace the kernel on device." || true
+              --notes "Prebuilt components consumed by build-kernel workflow: clang toolchain, kernel-build-tools, build-tools and mirrored ReSukiSU (ksud) flash binaries (arm64/armv7) to pack self-flashing boot kernels." || true
           fi
           assets=()
           for f in ksu-assets/ksu-*.zip; do
             [ -f "$f" ] && assets+=("$f")
           done
-          [ "${#assets[@]}" -gt 0 ] || { echo "no new ksu assets, nothing to upload"; exit 0; }
+          [ "${#assets[@]}" -gt 0 ] || { echo "no new ReSukiSU assets, nothing to upload"; exit 0; }
           gh release upload "$RELEASE_TAG" --clobber "${assets[@]}"
-          echo "uploaded ${#assets[@]} ksu assets to $RELEASE_TAG"
+          echo "uploaded ${#assets[@]} ReSukiSU assets to $RELEASE_TAG"
