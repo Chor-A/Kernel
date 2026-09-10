@@ -131,15 +131,13 @@ jobs:
             echo "✅ All .patch files applied cleanly with ZERO fuzz!"
           fi
           
-          echo "=== 3. Injecting FULL KSU_SUSFS & ZEROMOUNT into fs/Kconfig ==="
-          sed -i '/^endmenu/d' fs/Kconfig
-          
+          echo "=== 3. Safe Appending of SUSFS & ZEROMOUNT to fs/Kconfig ==="
           cat << 'EOF' >> fs/Kconfig
-          
+
           config KSU_SUSFS
               bool "KSU SUSFS Base"
               default y
-          
+
           config KSU_SUSFS_SUS_PATH
               bool "SUSFS sus_path"
               depends on KSU_SUSFS
@@ -184,32 +182,30 @@ jobs:
               bool "SUSFS sus_map"
               depends on KSU_SUSFS
               default y
-          
+
           config KSU_SUSFS_SUS_KSTAT_REDIRECT
               bool "SUSFS kstat redirect"
               depends on KSU_SUSFS_SUS_KSTAT
               default y
-          
+
           config KSU_SUSFS_UNICODE_FILTER
               bool "Unicode Filter (blocks scoped storage bypass)"
               depends on KSU_SUSFS
               default y
-          
+
           config KSU_SUSFS_HIDDEN_NAME
               bool "Hidden Android/data package names"
               depends on KSU_SUSFS_SUS_PATH
               default y
-          
+
           config KSU_SUSFS_HARDENED
               bool "Hardened SUSFS (upstream bug fixes)"
               depends on KSU_SUSFS
               default y
-          
+
           config ZEROMOUNT
               bool "ZeroMount Path Redirection Subsystem"
               default y
-          
-          endmenu
           EOF
           
           echo "=== 4. Modifying Config / Injecting Engine Rules! ==="
