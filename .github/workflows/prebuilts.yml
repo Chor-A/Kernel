@@ -172,6 +172,7 @@ jobs:
       - name: Mirror flash tools (ksud/ReSukiSU) binaries
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}  # <-- YE WAALI LINE MISS THI ! API script ab block nhi hoga.
         run: |
           set -euo pipefail
           if [ "$FORCE" != "1" ]; then
@@ -186,7 +187,6 @@ jobs:
               echo "missing assets: $missing"
             fi
           fi
-          # Aapke local script ko run karta hai: MAKE SURE YOU EDIT this .sh inside your repo to target ReSukiSU URLs!
           ./build/kernelsu-mirror.sh
 
       - name: Publish ReSukiSU tools to prebuilts release
