@@ -31,7 +31,7 @@ name: build-kernel
           - clang 14
         default: "clang 19"
       pack_flashable:
-        description: 'Build a universal self-patching flashable zip (on-device kernel replacement)'
+        description: 'Build a universal self-patching flashable zip (on-device kernel replacement via ksud)'
         type: boolean
         default: true
       defconfig_fragment_exclude:
@@ -43,11 +43,11 @@ name: build-kernel
         required: false
         default: ""
       append_config:
-        description: 'Extra literal CONFIG_* lines injected into the defconfig'
+        description: 'Extra literal CONFIG_* lines injected into the defconfig (comma-separated, e.g. "CONFIG_KERNELSU=y,# CONFIG_X is not set")'
         required: false
         default: ""
       ccache:
-        description: 'Accelerate with ccache. Branch-agnostic: objects shared across kernel branches/commits are reused from a cross-run cache.'
+        description: 'Accelerate with ccache. Branch-agnostic: objects shared across kernel branches/commits are reused from a cross-run cache; first run is cold, later runs (incl. different branches) get partial hits.'
         type: boolean
         default: true
 
@@ -103,51 +103,47 @@ jobs:
           sudo swapon /swapfile
           free -h
 
-      - name: Build kernel (With Custom Patches & ReSukiSU Injection)
+      - name: Build kernel
         env:
           KSU_PREBUILT_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/prebuilts
         run: |
-          # Fetch packing scripts asynchronously
           ksu_pid=""
           if [ "${{ inputs.pack_flashable }}" == "true" ]; then
             ./build/kernelsu-fetch.sh &
             ksu_pid=$!
           fi
           
-          # ================== AUTOMATED KERNEL PATCHING & RESUKISU LOGIC ==================
-          # Export workflow's dir securely to run before compile loop.
-          export WORKSPACE_DIR="$PWD"
-          cat << 'HOOK_EOF' > custom_patch_ksu.sh
-          echo "=====[ APPLYING ALL PATCH FILES & RESUKISU INTEGRATION ]====="
-          # -> Pull ReSukiSU from official repo
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || echo "!! ReSukiSU Fetch Error Occurred !!"
+          # --- Native Google-ACK injection hook (Your Required Changes ONLY!) ---
+          mkdir -p work
+          INJECT_SCRIPT="$GITHUB_WORKSPACE/work/patch_inject.sh"
+          cat << 'EOF' > "$INJECT_SCRIPT"
+          echo "==== Applying ReSukiSU ===="
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
           
-          # -> Verify local repo "patches/" folder under github Actions exists and inject ALL matches!
-          PATCH_LOC="$WORKSPACE_DIR/.github/workflows/patches"
-          if [ -d "$PATCH_LOC" ]; then
-            for local_patch in "$PATCH_LOC"/*.patch; do
-              if [ -f "$local_patch" ]; then
-                echo "=> Modifying tree -> Attempting patching with source file: $(basename "$local_patch")"
-                patch -p1 --forward < "$local_patch" || echo "[Warning] Conflicting chunks applying: $(basename "$local_patch")! Code Continues."
-              fi
-            done
-          else
-            echo "=> Patches repository directory (.github/workflows/patches) could not be located; Skipping module."
+          PATCH_DIR="$GITHUB_WORKSPACE/.github/workflows/patches"
+          if [ -d "$PATCH_DIR" ]; then
+             echo "==== Applying Patches Folder ===="
+             for patch_file in "$PATCH_DIR"/*.patch; do
+               [ -f "$patch_file" ] || continue
+               echo "Applying patch: $(basename "$patch_file")"
+               patch -p1 --forward < "$patch_file" || true
+             done
           fi
-          echo "=========================================================================="
-          HOOK_EOF
-          chmod +x custom_patch_ksu.sh
+          EOF
+          chmod +x "$INJECT_SCRIPT"
           
-          # Inject script execution exactly into cloudfox script runner directly via sed modifications!
-          sed -i -e '/build\/build\.sh/i source '"$WORKSPACE_DIR"'/custom_patch_ksu.sh' ./build-kernel.sh
-          # Catch other make environments conditionally.
-          sed -i -e '/\s\s*make\s\s*O=/i source '"$WORKSPACE_DIR"'/custom_patch_ksu.sh' ./build-kernel.sh
-          # ===========================================================================================
-
+          # Native method of the professional script to inject scripts into compiling kernel dir:
+          if [ -z "${{ inputs.append_build_env }}" ]; then
+            export APPEND_BUILD_ENV="PRE_DEFCONFIG_CMDS=$INJECT_SCRIPT"
+          else
+            export APPEND_BUILD_ENV="PRE_DEFCONFIG_CMDS=$INJECT_SCRIPT,${{ inputs.append_build_env }}"
+          fi
+          # ----------------------------------------------------------------------
+          
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
           
           if [ -n "$ksu_pid" ]; then
-            wait "$ksu_pid" || echo "::warning::Flash tool binaries fetch failed; flashable zip will be skipped"
+            wait "$ksu_pid" || echo "::warning::ksud fetch failed; flashable zip will be skipped"
           fi
 
       - name: Save ccache cache
@@ -163,7 +159,7 @@ jobs:
           set -euo pipefail
           if [ ! -f "$PWD/kernelsu/ksud-aarch64-linux-android" ] || \
              [ ! -f "$PWD/kernelsu/ksud-armv7-linux-androideabi" ]; then
-            echo "tools binaries missing (fetch failed); skipping flashable zip"
+            echo "ksud binaries missing (fetch failed); skipping flashable zip"
             exit 0
           fi
           kernel_img=$(find work/dist -name 'Image' -print -quit)
@@ -215,8 +211,8 @@ jobs:
             gh release upload "$tag" --clobber "${assets[@]}"
           else
             gh release create "$tag" \
-              --title "CloudFox ReSukiSU build $tag" \
-              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --title "CloudFox kernel build $tag" \
+              --notes "Built from ${{ inputs.kernel_repo || 'https://github.com/CloudFox-INC/CloudFox-Kernel' }} via Google's unmodified build.sh. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
           echo "release $tag updated"
