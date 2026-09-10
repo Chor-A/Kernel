@@ -131,9 +131,12 @@ jobs:
             echo "✅ All .patch files applied cleanly with ZERO fuzz!"
           fi
           
-          echo "=== 3. Safe Appending of SUSFS & ZEROMOUNT to fs/Kconfig ==="
-          cat << 'EOF' >> fs/Kconfig
+          echo "=== 3. Safe Python Injection into fs/Kconfig ==="
+          python3 - << 'PY_EOF'
+          with open('fs/Kconfig', 'r') as f:
+              kconfig = f.read()
 
+          susfs_kconfig = """
           config KSU_SUSFS
               bool "KSU SUSFS Base"
               default y
@@ -206,7 +209,18 @@ jobs:
           config ZEROMOUNT
               bool "ZeroMount Path Redirection Subsystem"
               default y
-          EOF
+          """
+
+          last_endmenu_idx = kconfig.rfind('endmenu')
+          if last_endmenu_idx != -1:
+              kconfig = kconfig[:last_endmenu_idx] + susfs_kconfig + "\n" + kconfig[last_endmenu_idx:]
+              with open('fs/Kconfig', 'w') as f:
+                  f.write(kconfig)
+              print("✅ Successfully injected Kconfigs cleanly!")
+          else:
+              print("❌ Error: Could not find 'endmenu' in fs/Kconfig")
+              exit(1)
+          PY_EOF
           
           echo "=== 4. Modifying Config / Injecting Engine Rules! ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
@@ -244,7 +258,7 @@ jobs:
           CONFIG_ZERO_MOUNT=y
           KSUCONF
           
-          echo "✅ All configs (including ALL 14 SUSFS Flags + Zeromount) applied directly on tree!"
+          echo "✅ All configs applied directly on tree!"
           INJECT_EOF
           
           chmod +x "$INJECT_SCRIPT"
