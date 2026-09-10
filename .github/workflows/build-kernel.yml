@@ -73,8 +73,17 @@ jobs:
           #!/bin/bash
           export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH"
           
-          # FIX: Navigate into the kernel source directory where the files actually reside
+          # Navigate into the kernel source directory
           cd common || exit 1
+          
+          echo "=== 0. Completely Removing nomount ==="
+          # Delete the nomount directory and any leftover standalone files
+          rm -rf fs/nomount fs/nomount.c fs/nomount.h
+          # Strip nomount references from the Makefile and Kconfig
+          sed -i '/nomount/Id' fs/Makefile
+          sed -i '/NOMOUNT/Id' fs/Kconfig
+          sed -i '/nomount/Id' fs/Kconfig
+          echo "✅ nomount completely removed from tree!"
           
           echo "=== 1. Applying Custom Patches (mglru, services, etc.) ==="
           for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
@@ -108,12 +117,17 @@ jobs:
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
+          
           # --- Enabling MGLRU explicitly for compiling ---
           CONFIG_LRU_GEN=y
           CONFIG_LRU_GEN_ENABLED=y
+          
+          # --- Zeromount Flags ---
+          CONFIG_ZEROMOUNT=y
+          CONFIG_ZERO_MOUNT=y
           KSUCONF
           
-          echo "✅ All ReSukiSU modules applied directly on tree!"
+          echo "✅ All configs (including zeromount) applied directly on tree!"
           INJECT_EOF
           
           chmod +x "$INJECT_SCRIPT"
@@ -185,6 +199,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar/ReSukiSU Kernel $tag" \
-              --notes "Compiled 5.10 Build. Manual patch system active! MGLRU Config applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
+              --notes "Compiled 5.10 Build. Nomount removed, Zeromount added, Manual patch system active! MGLRU Config applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
               "${assets[@]}"
           fi
