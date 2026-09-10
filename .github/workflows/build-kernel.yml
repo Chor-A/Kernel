@@ -88,28 +88,131 @@ jobs:
           echo "=== 1. Setting up ReSukiSU ==="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
           
-          echo "=== 2. Applying Custom Patches (mglru, services, etc.) ==="
+          echo "=== 2. Applying Custom Patches (Strict Mode) ==="
+          FAILED_PATCHES=()
+          
           for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
             if [ -d "$dir" ]; then
               for patch_file in "$dir"/*.patch; do
                 if [ -f "$patch_file" ]; then
+                  echo "----------------------------------------------------"
                   echo "Applying $patch_file..."
                   sed -i 's/\r$//' "$patch_file"
-                  if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file"; then
-                    echo "Applied via git apply"
-                  elif patch -p1 -N --no-backup-if-mismatch < "$patch_file"; then
-                    echo "Applied via patch"
+                  
+                  if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file" > patch.log 2>&1; then
+                    echo "✅ Applied cleanly via git!"
                   else
-                    echo "❌ Error: $patch_file partially skipped or failed. Stopping build!"
-                    exit 1
+                    if patch -p1 --fuzz=0 --no-backup-if-mismatch < "$patch_file" >> patch.log 2>&1; then
+                      echo "✅ Applied exactly via patch tool!"
+                    else
+                      echo "❌ ERROR: $patch_file has mismatches/conflicts!"
+                      echo "--- Reject Log ---"
+                      cat patch.log
+                      find . -name "*.rej" -print -exec cat {} \;
+                      echo "------------------"
+                      find . -name "*.rej" -delete
+                      FAILED_PATCHES+=("$patch_file")
+                    fi
                   fi
+                  rm -f patch.log
                 fi
               done
             fi
           done
-          echo "✅ All .patch files applied!"
           
-          echo "=== 3. Modifying Config / Injecting Engine Rules! ==="
+          echo "----------------------------------------------------"
+          if [ ${#FAILED_PATCHES[@]} -ne 0 ]; then
+            echo "🚨 STRICT MODE: The following patches FAILED due to mismatches:"
+            for failed in "${FAILED_PATCHES[@]}"; do
+              echo " ❌ $failed"
+            done
+            exit 1
+          else
+            echo "✅ All .patch files applied cleanly with ZERO fuzz!"
+          fi
+          
+          echo "=== 3. Injecting FULL KSU_SUSFS & ZEROMOUNT into fs/Kconfig ==="
+          sed -i '/^endmenu/d' fs/Kconfig
+          
+          cat << 'EOF' >> fs/Kconfig
+          
+          config KSU_SUSFS
+              bool "KSU SUSFS Base"
+              default y
+          
+          config KSU_SUSFS_SUS_PATH
+              bool "SUSFS sus_path"
+              depends on KSU_SUSFS
+              default y
+
+          config KSU_SUSFS_SUS_MOUNT
+              bool "SUSFS sus_mount"
+              depends on KSU_SUSFS
+              default y
+
+          config KSU_SUSFS_SUS_KSTAT
+              bool "SUSFS sus_kstat"
+              depends on KSU_SUSFS
+              default y
+
+          config KSU_SUSFS_SPOOF_UNAME
+              bool "SUSFS spoof_uname"
+              depends on KSU_SUSFS
+              default y
+
+          config KSU_SUSFS_ENABLE_LOG
+              bool "SUSFS enable_log"
+              depends on KSU_SUSFS
+              default y
+
+          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+              bool "SUSFS hide symbols"
+              depends on KSU_SUSFS
+              default y
+
+          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+              bool "SUSFS spoof cmdline"
+              depends on KSU_SUSFS
+              default y
+
+          config KSU_SUSFS_OPEN_REDIRECT
+              bool "SUSFS open redirect"
+              depends on KSU_SUSFS
+              default y
+
+          config KSU_SUSFS_SUS_MAP
+              bool "SUSFS sus_map"
+              depends on KSU_SUSFS
+              default y
+          
+          config KSU_SUSFS_SUS_KSTAT_REDIRECT
+              bool "SUSFS kstat redirect"
+              depends on KSU_SUSFS_SUS_KSTAT
+              default y
+          
+          config KSU_SUSFS_UNICODE_FILTER
+              bool "Unicode Filter (blocks scoped storage bypass)"
+              depends on KSU_SUSFS
+              default y
+          
+          config KSU_SUSFS_HIDDEN_NAME
+              bool "Hidden Android/data package names"
+              depends on KSU_SUSFS_SUS_PATH
+              default y
+          
+          config KSU_SUSFS_HARDENED
+              bool "Hardened SUSFS (upstream bug fixes)"
+              depends on KSU_SUSFS
+              default y
+          
+          config ZEROMOUNT
+              bool "ZeroMount Path Redirection Subsystem"
+              default y
+          
+          endmenu
+          EOF
+          
+          echo "=== 4. Modifying Config / Injecting Engine Rules! ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
           cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
           CONFIG_KSU=y
@@ -122,12 +225,30 @@ jobs:
           CONFIG_LRU_GEN=y
           CONFIG_LRU_GEN_ENABLED=y
           
+          # --- SUSFS Base Flags ---
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          
+          # --- SUSFS Enhanced & Hardened Flags ---
+          CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT=y
+          CONFIG_KSU_SUSFS_UNICODE_FILTER=y
+          CONFIG_KSU_SUSFS_HIDDEN_NAME=y
+          CONFIG_KSU_SUSFS_HARDENED=y
+          
           # --- Zeromount Flags ---
           CONFIG_ZEROMOUNT=y
           CONFIG_ZERO_MOUNT=y
           KSUCONF
           
-          echo "✅ All configs (including zeromount) applied directly on tree!"
+          echo "✅ All configs (including ALL 14 SUSFS Flags + Zeromount) applied directly on tree!"
           INJECT_EOF
           
           chmod +x "$INJECT_SCRIPT"
@@ -199,6 +320,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar/ReSukiSU Kernel $tag" \
-              --notes "Compiled 5.10 Build. Nomount removed, Zeromount added, Manual patch system active! MGLRU Config applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
+              --notes "Compiled 5.10 Build. Nomount removed, Zeromount added, Strict patching active! MGLRU & ALL SUSFS Configs applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
               "${assets[@]}"
           fi
