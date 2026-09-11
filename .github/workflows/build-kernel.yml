@@ -149,7 +149,44 @@ jobs:
             echo "✅ All .patch files applied successfully without rejects!"
           fi
           
-          echo "=== 3. Enabling SUSFS & Zeromount Flags in gki_defconfig ==="
+          echo "=== 3. Inject Kconfig definitions so savedefconfig doesn't drop our flags ==="
+          cat << 'KSUKCONF' >> fs/Kconfig
+
+          config KSU_SUSFS
+          	bool "KSU SUSFS"
+          config KSU_SUSFS_SUS_PATH
+          	bool
+          config KSU_SUSFS_SUS_MOUNT
+          	bool
+          config KSU_SUSFS_SUS_KSTAT
+          	bool
+          config KSU_SUSFS_SPOOF_UNAME
+          	bool
+          config KSU_SUSFS_ENABLE_LOG
+          	bool
+          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          	bool
+          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	bool
+          config KSU_SUSFS_OPEN_REDIRECT
+          	bool
+          config KSU_SUSFS_SUS_MAP
+          	bool
+          config KSU_SUSFS_SUS_KSTAT_REDIRECT
+          	bool
+          config KSU_SUSFS_UNICODE_FILTER
+          	bool
+          config KSU_SUSFS_HIDDEN_NAME
+          	bool
+          config KSU_SUSFS_HARDENED
+          	bool
+          config ZEROMOUNT
+          	bool "Zeromount"
+          config ZERO_MOUNT
+          	bool
+          KSUKCONF
+          
+          echo "=== 4. Enabling SUSFS & Zeromount Flags in gki_defconfig ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
           cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
           CONFIG_KSU=y
