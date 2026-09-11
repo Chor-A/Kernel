@@ -140,38 +140,62 @@ Diff -ruN post-upstream/fs/namei.c work-50/fs/namei.c
  		}
  	}
  #endif
-@@ -4168,6 +4192,12 @@
- 	struct inode *inode = NULL;
- 	struct inode *delegated_inode = NULL;
- 	unsigned int lookup_flags = 0;
-+#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
-+	if (!IS_ERR(name) && susfs_check_unicode_bypass(name->name)) {
-+		putname(name);
-+		return -ENOENT;
-+	}
-+#endif
+@@ -3963,11 +3981,13 @@
+ 	int error;
+ 	unsigned int lookup_flags = LOOKUP_DIRECTORY;
+ 
  retry:
- 	name = filename_parentat(dfd, name, lookup_flags, &path, &last, &type);
- 	if (IS_ERR(name))
-@@ -4274,6 +4304,12 @@
- 	struct path path;
- 	unsigned int lookup_flags = 0;
+ 	dentry = user_path_create(dfd, pathname, &path, lookup_flags);
+ 	if (IS_ERR(dentry))
+ 		return PTR_ERR(dentry);
  
 +#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
-+	if (!IS_ERR(newname) && susfs_check_unicode_bypass(newname->name)) {
++	if (susfs_check_unicode_bypass(dentry->d_name.name)) {
++		done_path_create(&path, dentry);
 +		return -ENOENT;
 +	}
 +#endif
 +
+ 	if (!dentry->d_inode) {
+ 		error = -ENOENT;
+ 		goto out_dput;
+@@ -4168,6 +4188,14 @@
+ 	struct inode *inode = NULL;
+ 	struct inode *delegated_inode = NULL;
+ 	unsigned int lookup_flags = 0;
++
+ retry:
+ 	name = filename_parentat(dfd, name, lookup_flags, &path, &last, &type);
+ 	if (IS_ERR(name))
+ 		return PTR_ERR(name);
+ 
++#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
++	if (susfs_check_unicode_bypass(name->name)) {
++		putname(name);
++		return -ENOENT;
++	}
++#endif
++
+ 	error = -ENOENT;
+ 	if (type != LAST_NORM)
+@@ -4274,6 +4302,7 @@
+ 	struct path path;
+ 	unsigned int lookup_flags = 0;
+ 
  	from = getname(oldname);
  	if (IS_ERR(from))
  		return PTR_ERR(from);
-@@ -4405,6 +4441,12 @@
- 	int how = 0;
- 	int error;
+@@ -4405,6 +4434,13 @@
+ 	to = getname(newname);
+ 	if (IS_ERR(to)) {
+ 		putname(from);
+ 		return PTR_ERR(to);
+ 	}
  
 +#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
-+	if (!IS_ERR(newname) && susfs_check_unicode_bypass(newname->name)) {
++	if (susfs_check_unicode_bypass(from->name) || susfs_check_unicode_bypass(to->name)) {
++		putname(from);
++		putname(to);
 +		return -ENOENT;
 +	}
 +#endif
@@ -179,21 +203,29 @@ Diff -ruN post-upstream/fs/namei.c work-50/fs/namei.c
  	if ((flags & ~(AT_SYMLINK_FOLLOW | AT_EMPTY_PATH)) != 0)
  		return -EINVAL;
  	/*
-@@ -4665,6 +4707,14 @@
+@@ -4665,6 +4701,7 @@
  	bool should_retry = false;
  	int error = -EINVAL;
  
+ 	if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE | RENAME_WHITEOUT))
+ 		goto put_both;
+ 
+@@ -4679,6 +4716,13 @@
+ 	to = getname(newname);
+ 	if (IS_ERR(to)) {
+ 		putname(from);
+ 		return PTR_ERR(to);
+ 	}
+ 
 +#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
-+	if ((!IS_ERR(from) && susfs_check_unicode_bypass(from->name)) ||
-+	    (!IS_ERR(to) && susfs_check_unicode_bypass(to->name))) {
++	if (susfs_check_unicode_bypass(from->name) || susfs_check_unicode_bypass(to->name)) {
 +		error = -ENOENT;
 +		goto put_both;
 +	}
 +#endif
 +
- 	if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE | RENAME_WHITEOUT))
- 		goto put_both;
- 
+ retry:
+ 	error = filename_parentat(olddfd, from, lookup_flags, &old_path,
 diff -ruN post-upstream/fs/namespace.c work-50/fs/namespace.c
 --- post-upstream/fs/namespace.c	2026-03-05 15:17:39.736010897 +0100
 +++ work-50/fs/namespace.c	2026-03-05 12:35:34.885192018 +0100
@@ -604,29 +636,28 @@ diff -ruN post-upstream/fs/open.c work-50/fs/open.c
  		goto out;
  
 +#ifdef CONFIG_KSU_SUSFS_HIDDEN_NAME
-+	if (current_uid().val >= 10000 &&
-+	    susfs_is_current_proc_umounted()) {
++	if (current_uid().val >= 10000 && susfs_is_current_proc_umounted()) {
++		bool is_hidden = false;
++		rcu_read_lock();
 +		struct dentry *d = path.dentry;
-+		struct dentry *parent = dget_parent(d);
++		struct dentry *parent = d ? READ_ONCE(d->d_parent) : NULL;
 +		if (parent) {
-+			struct dentry *gp = dget_parent(parent);
++			struct dentry *gp = READ_ONCE(parent->d_parent);
 +			if (gp) {
 +				int p_len = parent->d_name.len;
-+				if ((p_len == 4 && !strncmp(parent->d_name.name, "data", 4)) ||
-+				    (p_len == 3 && !strncmp(parent->d_name.name, "obb", 3))) {
-+					if (gp->d_name.len == 7 &&
-+					    !strncmp(gp->d_name.name, "Android", 7) &&
-+					    susfs_is_hidden_name(d->d_name.name,
-+					        d->d_name.len, current_uid().val)) {
-+						dput(gp);
-+						dput(parent);
-+						res = -ENOENT;
-+						goto out_path_release;
-+					}
++				int gp_len = gp->d_name.len;
++				if (((p_len == 4 && !strncmp(parent->d_name.name, "data", 4)) ||
++				     (p_len == 3 && !strncmp(parent->d_name.name, "obb", 3))) &&
++				    (gp_len == 7 && !strncmp(gp->d_name.name, "Android", 7))) {
++					is_hidden = susfs_is_hidden_name(d->d_name.name, d->d_name.len, current_uid().val);
 +				}
-+				dput(gp);
 +			}
-+			dput(parent);
++		}
++		rcu_read_unlock();
++
++		if (is_hidden) {
++			res = -ENOENT;
++			goto out_path_release;
 +		}
 +	}
 +#endif
@@ -634,19 +665,20 @@ diff -ruN post-upstream/fs/open.c work-50/fs/open.c
  	inode = d_backing_inode(path.dentry);
  
  	if ((mode & MAY_EXEC) && S_ISREG(inode->i_mode)) {
-@@ -1227,6 +1256,12 @@
- 	int fd = build_open_flags(how, &op);
- 	struct filename *tmp;
- 
+@@ -1231,6 +1266,13 @@
+ 	tmp = getname(filename);
+ 	if (IS_ERR(tmp))
+ 		return PTR_ERR(tmp);
++
 +#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
-+	if (tmp && !IS_ERR(tmp) && susfs_check_unicode_bypass(tmp->name)) {
++	if (susfs_check_unicode_bypass(tmp->name)) {
++		putname(tmp);
 +		return -ENOENT;
 +	}
 +#endif
-+
- 	if (fd)
- 		return fd;
  
+ 	fd = get_unused_fd_flags(how->flags);
+ 	if (fd >= 0) {
 diff -ruN post-upstream/fs/proc/base.c work-50/fs/proc/base.c
 --- post-upstream/fs/proc/base.c	2026-03-05 15:17:39.736496244 +0100
 +++ work-50/fs/proc/base.c	2026-03-05 12:35:34.886101274 +0100
@@ -740,7 +772,7 @@ diff -ruN post-upstream/fs/proc/fd.c work-50/fs/proc/fd.c
  		}
  
  		// - We have to iterate the mnt->mnt_parent until the mnt_id is not sus,
-@@ -86,27 +88,27 @@
+ 		//   because the last mnt without the fake mnt_id is actually the real mnt parent
 -		for (; mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) { }
 +		for (; mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = READ_ONCE(mnt->mnt_parent)) {
 +			if (mnt == READ_ONCE(mnt->mnt_parent)) break;
@@ -895,18 +927,19 @@ diff -ruN post-upstream/fs/proc_namespace.c work-50/fs/proc_namespace.c
 diff -ruN post-upstream/fs/readdir.c work-50/fs/readdir.c
 --- post-upstream/fs/readdir.c	2026-03-05 15:17:39.737466504 +0100
 +++ work-50/fs/readdir.c	2026-03-05 12:35:34.890630963 +0100
-@@ -175,7 +175,7 @@
+@@ -175,10 +175,9 @@
  	}
 -	if (susfs_is_inode_sus_path(inode)) {
 -		iput(inode);
--		return 0;
--	}
--	iput(inode);
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	if (susfs_is_hidden_ino(buf->sb, ino)) {
-+		return true;
-+	}
+ 		return 0;
+ 	}
+-	iput(inode);
  orig_flow:
-@@ -272,6 +272,9 @@
++#endif
+ 
+@@ -272,13 +272,12 @@
  		buf->error = -EOVERFLOW;
  		return -EOVERFLOW;
  	}
@@ -920,12 +953,10 @@ diff -ruN post-upstream/fs/readdir.c work-50/fs/readdir.c
 -	}
 -	if (susfs_is_inode_sus_path(inode)) {
 -		iput(inode);
--		return 0;
--	}
--	iput(inode);
 +	if (susfs_is_hidden_ino(buf->sb, ino)) {
-+		return true;
-+	}
+ 		return 0;
+ 	}
+-	iput(inode);
  orig_flow:
  #endif
 -
@@ -935,39 +966,41 @@ diff -ruN post-upstream/fs/readdir.c work-50/fs/readdir.c
  	dirent = buf->current_dir;
  	prev = (void __user *) dirent - prev_reclen;
  	if (!user_write_access_begin(prev, reclen + prev_reclen))
-@@ -386,7 +385,7 @@
+@@ -386,10 +385,9 @@
  	}
 -	if (susfs_is_inode_sus_path(inode)) {
 -		iput(inode);
--		return 0;
--	}
--	iput(inode);
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	if (susfs_is_hidden_ino(buf->sb, ino)) {
-+		return true;
-+	}
+ 		return 0;
+ 	}
+-	iput(inode);
  orig_flow:
-@@ -497,7 +496,7 @@
++#endif
+ 
+@@ -497,10 +496,9 @@
  	}
 -	if (susfs_is_inode_sus_path(inode)) {
 -		iput(inode);
--		return 0;
--	}
--	iput(inode);
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	if (susfs_is_hidden_ino(buf->sb, ino)) {
-+		return true;
-+	}
+ 		return 0;
+ 	}
+-	iput(inode);
  orig_flow:
-@@ -598,7 +597,7 @@
++#endif
+ 
+@@ -598,10 +597,9 @@
  	}
 -	if (susfs_is_inode_sus_path(inode)) {
 -		iput(inode);
--		return 0;
--	}
--	iput(inode);
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	if (susfs_is_hidden_ino(buf->sb, ino)) {
-+		return true;
-+	}
+ 		return 0;
+ 	}
+-	iput(inode);
  orig_flow:
++#endif
 diff -ruN post-upstream/fs/stat.c work-50/fs/stat.c
 --- post-upstream/fs/stat.c	2026-03-05 15:17:39.737656882 +0100
 +++ work-50/fs/stat.c	2026-03-08 06:33:23.105988682 +0100
@@ -1009,60 +1042,61 @@ diff -ruN post-upstream/fs/stat.c work-50/fs/stat.c
  	{
  		susfs_sus_ino_for_generic_fillattr(inode->i_ino, stat);
  		stat->mode = inode->i_mode;
-@@ -220,6 +227,12 @@
- 	unsigned lookup_flags = 0;
- 	int error;
- 
-+#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
-+	if (susfs_check_unicode_bypass(filename)) { // Requires filename wrapper passing const char* properly or use after getname
-+		// Handled gracefully below via path components
-+	}
-+#endif
-+
- #ifdef CONFIG_KSU_SUSFS
- 	if (likely(susfs_is_current_proc_umounted()) || !ksu_su_compat_enabled) {
- 		goto orig_flow;
-@@ -248,6 +261,30 @@
+@@ -248,6 +261,33 @@
  	if (error)
  		goto out;
  
 +#ifdef CONFIG_KSU_SUSFS_HIDDEN_NAME
-+	if (current_uid().val >= 10000 &&
-+	    susfs_is_current_proc_umounted()) {
++	if (current_uid().val >= 10000 && susfs_is_current_proc_umounted()) {
++		bool is_hidden = false;
++		rcu_read_lock();
 +		struct dentry *d = path.dentry;
-+		struct dentry *parent = dget_parent(d);
++		struct dentry *parent = d ? READ_ONCE(d->d_parent) : NULL;
 +		if (parent) {
-+			struct dentry *gp = dget_parent(parent);
++			struct dentry *gp = READ_ONCE(parent->d_parent);
 +			if (gp) {
 +				int p_len = parent->d_name.len;
-+				if ((p_len == 4 && !strncmp(parent->d_name.name, "data", 4)) ||
-+				    (p_len == 3 && !strncmp(parent->d_name.name, "obb", 3))) {
-+					if (gp->d_name.len == 7 &&
-+					    !strncmp(gp->d_name.name, "Android", 7) &&
-+					    susfs_is_hidden_name(d->d_name.name, d->d_name.len, current_uid().val)) {
-+						dput(gp); dput(parent); path_put(&path); error = -ENOENT; goto out;
-+					}
++				int gp_len = gp->d_name.len;
++				if (((p_len == 4 && !strncmp(parent->d_name.name, "data", 4)) ||
++				     (p_len == 3 && !strncmp(parent->d_name.name, "obb", 3))) &&
++				    (gp_len == 7 && !strncmp(gp->d_name.name, "Android", 7))) {
++					is_hidden = susfs_is_hidden_name(d->d_name.name, d->d_name.len, current_uid().val);
 +				}
-+				dput(gp);
 +			}
-+			dput(parent);
 +		}
++		rcu_read_unlock();
++
++		if (is_hidden) {
++			path_put(&path);
++			error = -ENOENT;
++			goto out;
++		}
++	}
++#endif
++
++#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
++	if (susfs_check_unicode_bypass(path.dentry->d_name.name)) {
++		path_put(&path);
++		error = -ENOENT;
++		goto out;
 +	}
 +#endif
 +
  	error = vfs_getattr(&path, stat, request_mask, flags);
  	stat->mnt_id = real_mount(path.mnt)->mnt_id;
  	stat->result_mask |= STATX_MNT_ID;
-@@ -461,6 +497,12 @@
- 	int empty = 0;
- 	unsigned int lookup_flags = LOOKUP_EMPTY;
- 
+@@ -470,6 +506,13 @@
+ 	error = user_path_at_empty(dfd, pathname, lookup_flags, &path, &empty);
+ 	if (unlikely(error))
+ 		return empty ? 0 : error;
++
 +#ifdef CONFIG_KSU_SUSFS_UNICODE_FILTER
-+	if (pathname && susfs_check_unicode_bypass(pathname)) {
-+		// Handled similarly
++	if (susfs_check_unicode_bypass(path.dentry->d_name.name)) {
++		path_put(&path);
++		return -ENOENT;
 +	}
 +#endif
-+
+ 
  	if (bufsiz <= 0)
  		return -EINVAL;
  
@@ -1200,7 +1234,7 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
  #endif
  
  bool susfs_starts_with(const char *str, const char *prefix) {
-@@ -45,6 +117,159 @@
+@@ -45,6 +117,163 @@
  #ifdef CONFIG_KSU_SUSFS_SUS_PATH
  static DEFINE_SPINLOCK(susfs_spin_lock_sus_path);
  static LIST_HEAD(LH_SUS_PATH_LOOP);
@@ -1239,21 +1273,22 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
 +{
 +	struct susfs_hidden_name_entry *entry;
 +	u32 key = susfs_name_hash(name, namlen);
++	bool blocked = false;
 +
 +	rcu_read_lock();
 +	hash_for_each_possible_rcu(susfs_hidden_names, entry, node, key) {
 +		if (entry->namlen == namlen &&
 +		    !memcmp(entry->name, name, namlen)) {
 +			if (entry->owner_uid && caller_uid == entry->owner_uid) {
-+				rcu_read_unlock();
-+				return false;
++				blocked = false;
++			} else {
++			    blocked = true;
 +			}
-+			rcu_read_unlock();
-+			return true;
++			break;
 +		}
 +	}
 +	rcu_read_unlock();
-+	return false;
++	return blocked;
 +}
 +EXPORT_SYMBOL(susfs_is_hidden_name);
 +
@@ -1699,7 +1734,7 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
  }
  
  void susfs_add_sus_kstat(void __user **user_info) {
-@@ -397,6 +702,164 @@
+@@ -397,6 +702,159 @@
  	}
  }
  
@@ -1747,10 +1782,8 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
 +		inode_virtual = d_inode(p_virtual.dentry);
 +		if (inode_virtual) {
 +			virtual_ino = inode_virtual->i_ino;
-+			if (inode_virtual->i_mapping && !test_bit(AS_FLAGS_SUS_KSTAT, &inode_virtual->i_mapping->flags)) {
-+				spin_lock(&inode_virtual->i_lock);
++			if (inode_virtual->i_mapping) {
 +				set_bit(AS_FLAGS_SUS_KSTAT, &inode_virtual->i_mapping->flags);
-+				spin_unlock(&inode_virtual->i_lock);
 +			}
 +			virtual_path_resolved = true;
 +			SUSFS_LOGI("kstat_redirect: VPATH_OK ino=%lu flagged='%s'\n",
@@ -1778,10 +1811,8 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
 +		goto out_copy_to_user;
 +	}
 +
-+	if (inode_real->i_mapping && !test_bit(AS_FLAGS_SUS_KSTAT, &inode_real->i_mapping->flags)) {
-+		spin_lock(&inode_real->i_lock);
++	if (inode_real->i_mapping) {
 +		set_bit(AS_FLAGS_SUS_KSTAT, &inode_real->i_mapping->flags);
-+		spin_unlock(&inode_real->i_lock);
 +	}
 +
 +	new_entry->target_ino = inode_real->i_ino;
@@ -1863,25 +1894,121 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
 +
  void susfs_update_sus_kstat(void __user **user_info) {
  	struct st_susfs_sus_kstat info = {0};
- 	struct st_susfs_sus_kstat_hlist *new_entry, *tmp_entry;
-@@ -434,11 +901,16 @@
- 								new_entry->info.spoofed_blocks, info.spoofed_blocks, info.target_pathname);
- 				new_entry->info.spoofed_blocks = info.spoofed_blocks;
- 			}
--			hash_del(&tmp_entry->node);
--			kfree(tmp_entry);
- 			spin_lock(&susfs_spin_lock_sus_kstat);
-+			hash_del(&tmp_entry->node);
-+			/* Use actual target struct from iteration or update inline */
- 			hash_add(SUS_KSTAT_HLIST, &new_entry->node, info.target_ino);
- 			spin_unlock(&susfs_spin_lock_sus_kstat);
-+			kfree(tmp_entry);
-+			info.err = 0;
-+			goto out_copy_to_user;
- 		}
+-	struct st_susfs_sus_kstat_hlist *new_entry, *tmp_entry;
++	struct st_susfs_sus_kstat_hlist *entry;
+ 
+ 	if (copy_from_user(&info, (struct st_susfs_sus_kstat __user*)*user_info, sizeof(struct st_susfs_sus_kstat))) {
+ 		info.err = -EFAULT;
+ 		goto out_copy_to_user;
  	}
- 	rcu_read_unlock();
-@@ -524,10 +996,12 @@
+ 
+ 	info.err = -ENOENT;
+-
+-	rcu_read_lock();
+-	hash_for_each_possible_rcu(SUS_KSTAT_HLIST, tmp_entry, node, info.target_ino) {
+-		if (tmp_entry->info.target_ino == info.target_ino) {
+-			new_entry = kzalloc(sizeof(struct st_susfs_sus_kstat_hlist), GFP_KERNEL);
+-			if (!new_entry) {
+-				rcu_read_unlock();
+-				info.err = -ENOMEM;
+-				goto out_copy_to_user;
+-			}
+-			memcpy(new_entry, tmp_entry, sizeof(struct st_susfs_sus_kstat_hlist));
+-			if (info.spoofed_ino) {
+-				SUSFS_LOGI("sus_kstat spoofed_ino updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_ino, info.spoofed_ino, info.target_pathname);
+-				new_entry->info.spoofed_ino = info.spoofed_ino;
+-			}
+-			if (info.spoofed_dev) {
+-				SUSFS_LOGI("sus_kstat spoofed_dev updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_dev, info.spoofed_dev, info.target_pathname);
+-				new_entry->info.spoofed_dev = info.spoofed_dev;
+-			}
+-			if (info.spoofed_nlink) {
+-				SUSFS_LOGI("sus_kstat spoofed_nlink updated from '%u' to '%u' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_nlink, info.spoofed_nlink, info.target_pathname);
+-				new_entry->info.spoofed_nlink = info.spoofed_nlink;
+-			}
+-			if (info.spoofed_size) {
+-				SUSFS_LOGI("sus_kstat spoofed_size updated from '%llu' to '%llu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_size, info.spoofed_size, info.target_pathname);
+-				new_entry->info.spoofed_size = info.spoofed_size;
+-			}
+-			if (info.spoofed_atime_tv_sec) {
+-				SUSFS_LOGI("sus_kstat spoofed_atime_tv_sec updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_atime_tv_sec, info.spoofed_atime_tv_sec, info.target_pathname);
+-				new_entry->info.spoofed_atime_tv_sec = info.spoofed_atime_tv_sec;
+-			}
+-			if (info.spoofed_mtime_tv_sec) {
+-				SUSFS_LOGI("sus_kstat spoofed_mtime_tv_sec updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_mtime_tv_sec, info.spoofed_mtime_tv_sec, info.target_pathname);
+-				new_entry->info.spoofed_mtime_tv_sec = info.spoofed_mtime_tv_sec;
+-			}
+-			if (info.spoofed_ctime_tv_sec) {
+-				SUSFS_LOGI("sus_kstat spoofed_ctime_tv_sec updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_ctime_tv_sec, info.spoofed_ctime_tv_sec, info.target_pathname);
+-				new_entry->info.spoofed_ctime_tv_sec = info.spoofed_ctime_tv_sec;
+-			}
+-			if (info.spoofed_atime_tv_nsec) {
+-				SUSFS_LOGI("sus_kstat spoofed_atime_tv_nsec updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_atime_tv_nsec, info.spoofed_atime_tv_nsec, info.target_pathname);
+-				new_entry->info.spoofed_atime_tv_nsec = info.spoofed_atime_tv_nsec;
+-			}
+-			if (info.spoofed_mtime_tv_nsec) {
+-				SUSFS_LOGI("sus_kstat spoofed_mtime_tv_nsec updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_mtime_tv_nsec, info.spoofed_mtime_tv_nsec, info.target_pathname);
+-				new_entry->info.spoofed_mtime_tv_nsec = info.spoofed_mtime_tv_nsec;
+-			}
+-			if (info.spoofed_ctime_tv_nsec) {
+-				SUSFS_LOGI("sus_kstat spoofed_ctime_tv_nsec updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_ctime_tv_nsec, info.spoofed_ctime_tv_nsec, info.target_pathname);
+-				new_entry->info.spoofed_ctime_tv_nsec = info.spoofed_ctime_tv_nsec;
+-			}
+-			if (info.spoofed_blksize) {
+-				SUSFS_LOGI("sus_kstat spoofed_blksize updated from '%lu' to '%lu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_blksize, info.spoofed_blksize, info.target_pathname);
+-				new_entry->info.spoofed_blksize = info.spoofed_blksize;
+-			}
+-			if (info.spoofed_blocks) {
+-				SUSFS_LOGI("sus_kstat spoofed_blocks updated from '%llu' to '%llu' for target_pathname '%s'\n",
+-								new_entry->info.spoofed_blocks, info.spoofed_blocks, info.target_pathname);
+-				new_entry->info.spoofed_blocks = info.spoofed_blocks;
+-			}
+-			spin_lock(&susfs_spin_lock_sus_kstat);
+-			hash_del(&tmp_entry->node);
+-			/* Use actual target struct from iteration or update inline */
+-			hash_add(SUS_KSTAT_HLIST, &new_entry->node, info.target_ino);
+-			spin_unlock(&susfs_spin_lock_sus_kstat);
+-			kfree(tmp_entry);
+-			info.err = 0;
+-			goto out_copy_to_user;
+-		}
+-	}
+-	rcu_read_unlock();
++	spin_lock(&susfs_spin_lock_sus_kstat);
++	hash_for_each_possible(SUS_KSTAT_HLIST, entry, node, info.target_ino) {
++		if (entry->target_ino == info.target_ino) {
++			if (info.spoofed_ino) entry->info.spoofed_ino = info.spoofed_ino;
++			if (info.spoofed_dev) entry->info.spoofed_dev = info.spoofed_dev;
++			if (info.spoofed_nlink) entry->info.spoofed_nlink = info.spoofed_nlink;
++			if (info.spoofed_size) entry->info.spoofed_size = info.spoofed_size;
++			if (info.spoofed_atime_tv_sec) entry->info.spoofed_atime_tv_sec = info.spoofed_atime_tv_sec;
++			if (info.spoofed_mtime_tv_sec) entry->info.spoofed_mtime_tv_sec = info.spoofed_mtime_tv_sec;
++			if (info.spoofed_ctime_tv_sec) entry->info.spoofed_ctime_tv_sec = info.spoofed_ctime_tv_sec;
++			if (info.spoofed_atime_tv_nsec) entry->info.spoofed_atime_tv_nsec = info.spoofed_atime_tv_nsec;
++			if (info.spoofed_mtime_tv_nsec) entry->info.spoofed_mtime_tv_nsec = info.spoofed_mtime_tv_nsec;
++			if (info.spoofed_ctime_tv_nsec) entry->info.spoofed_ctime_tv_nsec = info.spoofed_ctime_tv_nsec;
++			if (info.spoofed_blksize) entry->info.spoofed_blksize = info.spoofed_blksize;
++			if (info.spoofed_blocks) entry->info.spoofed_blocks = info.spoofed_blocks;
++			info.err = 0;
++			break;
++		}
++	}
++	spin_unlock(&susfs_spin_lock_sus_kstat);
+ 
+ out_copy_to_user:
+ 	if (copy_to_user(&((struct st_susfs_sus_kstat __user*)*user_info)->err, &info.err, sizeof(info.err))) {
+@@ -524,10 +1019,12 @@
  }
  
  void susfs_spoof_uname(struct new_utsname* tmp) {
@@ -1895,7 +2022,7 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
  }
  #endif // #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
  
-@@ -570,8 +1044,8 @@
+@@ -570,8 +1067,8 @@
  	struct st_susfs_spoof_cmdline_or_bootconfig *info = (struct st_susfs_spoof_cmdline_or_bootconfig *)kzalloc(sizeof(struct st_susfs_spoof_cmdline_or_bootconfig), GFP_KERNEL);
  	
  	if (!info) {
@@ -1906,7 +2033,7 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
  	}
  
  	if (copy_from_user(info, (struct st_susfs_spoof_cmdline_or_bootconfig __user*)*user_info, sizeof(struct st_susfs_spoof_cmdline_or_bootconfig))) {
-@@ -778,8 +1252,8 @@
+@@ -778,8 +1275,8 @@
  	size_t copied_size = 0;
  
  	if (!info) {
@@ -1917,7 +2044,7 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
  	}
  
  	if (copy_from_user(info, (struct st_susfs_enabled_features __user*)*user_info, sizeof(struct st_susfs_enabled_features))) {
-@@ -798,7 +1272,7 @@
+@@ -798,7 +1295,7 @@
  	info->err = copy_config_to_buf("CONFIG_KSU_SUSFS_SUS_MOUNT\n", buf_ptr, &copied_size, SUSFS_ENABLED_FEATURES_SIZE);
  	if (info->err) goto out_copy_to_user;
  	buf_ptr = info->enabled_features + copied_size;
@@ -1926,7 +2053,7 @@ diff -ruN post-upstream/fs/susfs.c work-50/fs/susfs.c
  #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
  	info->err = copy_config_to_buf("CONFIG_KSU_SUSFS_SUS_KSTAT\n", buf_ptr, &copied_size, SUSFS_ENABLED_FEATURES_SIZE);
  	if (info->err) goto out_copy_to_user;
-@@ -834,6 +1308,16 @@
+@@ -834,6 +1331,16 @@
  	if (info->err) goto out_copy_to_user;
  	buf_ptr = info->enabled_features + copied_size;
  #endif
