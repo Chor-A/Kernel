@@ -118,12 +118,6 @@ jobs:
           cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
           CONFIG_KSU=y
           CONFIG_OVERLAY_FS=y
-          CONFIG_KPROBES=y
-          CONFIG_HAVE_KPROBES=y
-          CONFIG_KPROBE_EVENTS=y
-          
-          # --- Enabling MGLRU explicitly for compiling ---
-          
           
           # --- SUSFS Base Flags ---
           CONFIG_KSU_SUSFS=y
@@ -220,6 +214,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar/ReSukiSU Kernel $tag" \
-              --notes "Compiled 5.10 Build. Nomount removed, Zeromount added, Original patches active! MGLRU & ALL SUSFS Configs applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
+              --notes "Compiled 5.10 Build. Nomount removed, Zeromount added, Original patches active! ALL SUSFS & Zeromount Configs applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
               "${assets[@]}"
           fi
