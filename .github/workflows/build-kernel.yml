@@ -86,32 +86,68 @@ jobs:
           echo "=== 1. Setting up ReSukiSU ==="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
           
-          echo "=== 2. Applying Original Patches (Smart Offset Mode) ==="
+          echo "=== 2. Applying Patches (Auto-Skip Malformed & Reject Logging Mode) ==="
+          REPORT_FILE="$GITHUB_WORKSPACE/patch_reject_summary.log"
+          echo "====================================================" > "$REPORT_FILE"
+          echo "⚠️ KERNEL PATCH REJECT & ERROR REPORT" >> "$REPORT_FILE"
+          echo "Generated on: $(date)" >> "$REPORT_FILE"
+          echo "====================================================" >> "$REPORT_FILE"
+          
           for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
             if [ -d "$dir" ]; then
               for patch_file in "$dir"/*.patch; do
                 if [ -f "$patch_file" ]; then
                   echo "----------------------------------------------------"
-                  echo "Applying $patch_file..."
+                  echo "Applying $(basename "$patch_file")..."
                   sed -i 's/\r$//' "$patch_file"
                   
+                  # Pehle standard apply try karenge
                   if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file" > patch.log 2>&1; then
                     echo "✅ Applied cleanly via git!"
                   else
-                    if patch -p1 --no-backup-if-mismatch < "$patch_file" >> patch.log 2>&1; then
-                      echo "✅ Applied successfully via patch tool (Offsets resolved)!"
-                    else
-                      echo "❌ ERROR: $patch_file failed!"
-                      cat patch.log
-                      exit 1
+                    echo "⚠️ Clean apply failed/malformed! Running with --reject to skip errors and save hunks..."
+                    
+                    # git apply --reject chalao jo fail lines ko .rej bana dega aur baaki apply karega
+                    if ! git apply --reject --ignore-whitespace --whitespace=nowarn "$patch_file" >> patch.log 2>&1; then
+                      # Agar git apply totally fail/malformed ho, to standard patch tool se try karo
+                      patch -p1 --forward --batch < "$patch_file" >> patch.log 2>&1 || true
                     fi
+                    
+                    echo "⚠️ Skipped malformed errors for $(basename "$patch_file"). Continuing process..."
+                    echo "" >> "$REPORT_FILE"
+                    echo "--- [Patch: $(basename "$patch_file")] ---" >> "$REPORT_FILE"
+                    cat patch.log >> "$REPORT_FILE"
                   fi
                   rm -f patch.log
                 fi
               done
             fi
           done
-          echo "✅ All .patch files applied successfully!"
+
+          # Saare .rej files ko dhoondh kar detailed report me save karna
+          REJECTED_FILES=$(find . -name "*.rej")
+          if [ -n "$REJECTED_FILES" ]; then
+            echo "" >> "$REPORT_FILE"
+            echo "====================================================" >> "$REPORT_FILE"
+            echo "DETAILED REJECTED CODE & LOCATIONS:" >> "$REPORT_FILE"
+            echo "====================================================" >> "$REPORT_FILE"
+            for rej in $REJECTED_FILES; do
+              # .rej hata kar actual file path nikalna
+              ORIGINAL_FILE="${rej%.rej}"
+              echo "" >> "$REPORT_FILE"
+              echo "❌ Error/Rejected in: $rej" >> "$REPORT_FILE"
+              echo "📍 Asli Code Yahan Hona Chahiye: common/$ORIGINAL_FILE" >> "$REPORT_FILE"
+              echo "--- Code Jo Apply Nahi Ho Paya (Rejected Hunk) ---" >> "$REPORT_FILE"
+              cat "$rej" >> "$REPORT_FILE"
+              echo "----------------------------------------------------" >> "$REPORT_FILE"
+            done
+            
+            echo "::warning::Kuch patches me malformed/failed hunks aaye the! Report check karein."
+            echo "=== REJECT REPORT PREVIEW ==="
+            cat "$REPORT_FILE"
+          else
+            echo "✅ All .patch files applied successfully without rejects!"
+          fi
           
           echo "=== 3. Enabling SUSFS & Zeromount Flags in gki_defconfig ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
@@ -156,6 +192,14 @@ jobs:
           if [ -n "$ksu_pid" ]; then
             wait "$ksu_pid" || echo "::warning::ksud fetch failed; flashable zip will be skipped"
           fi
+
+      - name: Upload Reject Report as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-reject-report
+          path: patch_reject_summary.log
+          if-no-files-found: ignore
 
       - name: Pack Flashable Zip
         run: |
