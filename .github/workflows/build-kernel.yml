@@ -123,8 +123,7 @@ jobs:
           CONFIG_KPROBE_EVENTS=y
           
           # --- Enabling MGLRU explicitly for compiling ---
-          CONFIG_LRU_GEN=y
-          CONFIG_LRU_GEN_ENABLED=y
+          
           
           # --- SUSFS Base Flags ---
           CONFIG_KSU_SUSFS=y
