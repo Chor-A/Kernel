@@ -342,7 +342,7 @@ index 9c699e632..c4a5678b8 100644
  	return retval;
  }
  EXPORT_SYMBOL(vfs_getattr);
-@@ -217,6 +227,44 @@ EXPORT_SYMBOL(vfs_statx_fd);
+@@ -217,6 +227,61 @@ EXPORT_SYMBOL(vfs_statx_fd);
   *
   * 0 will be returned on success, and a -ve error code if unsuccessful.
   */
@@ -351,44 +351,75 @@ index 9c699e632..c4a5678b8 100644
 +                                      struct kstat *stat, unsigned int request_mask, 
 +                                      int flags) {
 +	if (zm_is_recursive() || IS_ERR_OR_NULL(filename)) return -ENOENT;
-+	if (filename) {
-+		char kname[NAME_MAX + 1];
-+		long copied = strncpy_from_user(kname, filename, sizeof(kname));
-+		if (copied > 0) {
-+			if (copied == sizeof(kname)) copied--;
-+			kname[copied] = '\0';
-+			if (kname[0] != '/') {
-+				char *abs_path = zeromount_build_absolute_path(dfd, kname);
-+				if (abs_path) {
-+					char *resolved = zeromount_resolve_path(abs_path);
-+					if (resolved) {
-+						struct path zm_path;
-+						int zm_ret;
-+						zm_enter();
-+						zm_ret = kern_path(resolved, (flags & AT_SYMLINK_NOFOLLOW) ? 0 : LOOKUP_FOLLOW, &zm_path);
-+						zm_exit();
-+						kfree(resolved);
-+						kfree(abs_path);
-+						if (zm_ret == 0) {
-+							zm_ret = vfs_getattr(&zm_path, stat, request_mask,
-+												 (flags & AT_SYMLINK_NOFOLLOW) ? AT_SYMLINK_NOFOLLOW : 0);
-+							path_put(&zm_path);
-+							return zm_ret;
-+						}
-+					} else {
-+						kfree(abs_path);
-+					}
-+				}
-+			}
++	
++	char kname[PATH_MAX];
++	long copied = strncpy_from_user(kname, filename, sizeof(kname));
++	if (copied <= 0) return -ENOENT;
++	if (copied == sizeof(kname)) copied--;
++	kname[copied] = '\0';
++
++	char *abs_path = NULL;
++	if (kname[0] != '/') {
++		abs_path = zeromount_build_absolute_path(dfd, kname);
++	} else {
++		abs_path = kstrdup(kname, GFP_KERNEL);
++	}
++
++	if (!abs_path) return -ENOENT;
++
++	/* 1. Ghost Directory check (Bypass VFS completely) */
++	u32 dir_hash = full_name_hash(NULL, abs_path, strlen(abs_path));
++	struct zeromount_dir_node *dir_node;
++	bool is_ghost = false;
++	
++	rcu_read_lock();
++	hash_for_each_possible_rcu(zeromount_dirs_ht, dir_node, node, dir_hash) {
++		if (strcmp(dir_node->dir_path, abs_path) == 0) {
++			is_ghost = true;
++			break;
 +		}
 +	}
++	rcu_read_unlock();
++
++	if (is_ghost) {
++		stat->mode = S_IFDIR | 0755;
++		stat->nlink = 2;
++		stat->uid = GLOBAL_ROOT_UID;
++		stat->gid = GLOBAL_ROOT_UID;
++		stat->size = 4096;
++		stat->ino = zeromount_generate_ino(abs_path, "");
++		stat->dev = 0;
++		kfree(abs_path);
++		return 0; /* Fake stat perfectly forged */
++	}
++
++	/* 2. Normal resolution */
++	char *resolved = zeromount_resolve_path(abs_path);
++	if (resolved) {
++		struct path zm_path;
++		int zm_ret;
++		zm_enter();
++		zm_ret = kern_path(resolved, (flags & AT_SYMLINK_NOFOLLOW) ? 0 : LOOKUP_FOLLOW, &zm_path);
++		zm_exit();
++		kfree(resolved);
++		kfree(abs_path);
++		if (zm_ret == 0) {
++			zm_ret = vfs_getattr(&zm_path, stat, request_mask,
++								 (flags & AT_SYMLINK_NOFOLLOW) ? AT_SYMLINK_NOFOLLOW : 0);
++			path_put(&zm_path);
++			return zm_ret;
++		}
++	} else {
++		kfree(abs_path);
++	}
++
 +	return -ENOENT;
 +}
 +#endif
  static int vfs_statx(int dfd, const char __user *filename, int flags,
  	      struct kstat *stat, u32 request_mask)
  {
-@@ -224,6 +272,14 @@ static int vfs_statx(int dfd, const char __user *filename, int flags,
+@@ -224,6 +289,14 @@ static int vfs_statx(int dfd, const char __user *filename, int flags,
  	unsigned lookup_flags = 0;
  	int error;
  
@@ -529,7 +560,8 @@ index 000000000..01fd6aca0
 +#define ZEROMOUNT_HASH_BITS	10
 +#define ZM_FLAG_ACTIVE		(1 << 0)
 +#define ZM_FLAG_IS_DIR		(1 << 7)
-+#define ZEROMOUNT_MAGIC_POS	0x7000000000000000ULL
++/* Safe 31-bit integer for 32-bit compat userspace logic */
++#define ZEROMOUNT_MAGIC_POS	0x70000000ULL
 +
 +#define ZEROMOUNT_IOC_MAGIC	ZEROMOUNT_MAGIC_CODE
 +#define ZEROMOUNT_IOC_ADD_RULE	_IOW(ZEROMOUNT_IOC_MAGIC, 1, struct zeromount_ioctl_data)
@@ -611,6 +643,7 @@ index 000000000..01fd6aca0
 +char *zeromount_get_static_vpath(struct inode *inode);
 +void zeromount_spoof_mmap_metadata(struct inode *inode, dev_t *dev,
 +				   unsigned long *ino);
++unsigned long zeromount_generate_ino(const char *dir, const char *name);
 +bool zeromount_is_traversal_allowed(struct inode *inode, int mask);
 +bool zeromount_is_injected_file(struct inode *inode);
 +bool zeromount_is_uid_blocked(uid_t uid);
@@ -633,6 +666,7 @@ index 000000000..01fd6aca0
 +static inline void zeromount_spoof_mmap_metadata(struct inode *inode,
 +						 dev_t *dev,
 +						 unsigned long *ino) {}
++static inline unsigned long zeromount_generate_ino(const char *dir, const char *name) { return 0; }
 +static inline bool zeromount_is_traversal_allowed(struct inode *inode, int mask) { return false; }
 +static inline bool zeromount_is_injected_file(struct inode *inode) { return false; }
 +static inline bool zeromount_is_uid_blocked(uid_t uid) { return false; }
@@ -647,7 +681,7 @@ new file mode 100644
 index 000000000..0b596ea48
 --- /dev/null
 +++ b/fs/zeromount.c
-@@ -0,0 +1,1596 @@
+@@ -0,0 +1,1591 @@
 +#include <linux/module.h>
 +#include <linux/kernel.h>
 +#include <linux/init.h>
@@ -970,13 +1004,14 @@ index 000000000..0b596ea48
 +	kvfree(paths);
 +}
 +
-+static unsigned long zeromount_generate_ino(const char *dir, const char *name)
++unsigned long zeromount_generate_ino(const char *dir, const char *name)
 +{
 +	u32 h1 = full_name_hash(NULL, dir, strlen(dir));
 +	u32 h2 = full_name_hash(NULL, name, strlen(name));
 +
 +	return (unsigned long)(h1 ^ h2);
 +}
++EXPORT_SYMBOL(zeromount_generate_ino);
 +
 +char *zeromount_get_virtual_path_for_inode(struct inode *inode)
 +{
@@ -1011,7 +1046,6 @@ index 000000000..0b596ea48
 +}
 +EXPORT_SYMBOL(zeromount_get_virtual_path_for_inode);
 +
-+/* Returns kstrdup'd copy; caller must kfree. GFP_ATOMIC safe from any context. */
 +char *zeromount_get_static_vpath(struct inode *inode)
 +{
 +	struct zeromount_rule *rule;
@@ -1037,7 +1071,6 @@ index 000000000..0b596ea48
 +}
 +EXPORT_SYMBOL(zeromount_get_static_vpath);
 +
-+/* Spoof dev/ino in /proc/PID/maps for redirected mmap'd files */
 +void zeromount_spoof_mmap_metadata(struct inode *inode, dev_t *dev,
 +				   unsigned long *ino)
 +{
@@ -1249,7 +1282,6 @@ index 000000000..0b596ea48
 +struct filename *zeromount_getname_hook(struct filename *name)
 +{
 +	char *target_path;
-+	struct filename *new_name;
 +
 +	if (zeromount_should_skip() ||
 +	    zeromount_is_uid_blocked(current_uid().val) ||
@@ -1264,22 +1296,12 @@ index 000000000..0b596ea48
 +		return name;
 +	}
 +
-+	new_name = getname_kernel(target_path);
++	/* In-place string mutation to prevent Audit UAF and memory leaks */
++	strscpy((char *)name->name, target_path, 4000);
++
 +	kfree(target_path);
-+
-+	if (IS_ERR(new_name)) {
-+		zm_exit();
-+		return name;
-+	}
-+
-+	/* Transfer audit metadata and uptr before freeing the old struct to prevent UAF */
-+	new_name->uptr = name->uptr;
-+	new_name->aname = name->aname;
-+	audit_getname(new_name);
-+
-+	putname(name);
 +	zm_exit();
-+	return new_name;
++	return name;
 +}
 +
 +struct zm_pending_dent {
@@ -1287,7 +1309,6 @@ index 000000000..0b596ea48
 +	unsigned char d_type;
 +};
 +
-+/* Merged readdir injection: compat=0 for dirent64, compat=1 for dirent */
 +void zeromount_inject_dents_common(struct file *file, void __user **dirent,
 +				   int *count, loff_t *pos, int compat)
 +{
@@ -1316,7 +1337,6 @@ index 000000000..0b596ea48
 +		return;
 +	}
 +
-+	/* Skip if this directory is itself redirected */
 +	{
 +		const char *norm_p;
 +		size_t norm_len;
@@ -1484,7 +1504,6 @@ index 000000000..0b596ea48
 +		return 0;
 +	}
 +
-+	/* Dynamically extract the underlying real filesystem magic */
 +	zm_enter();
 +	if (kern_path(resolved, LOOKUP_FOLLOW, &real_path) == 0) {
 +		if (real_path.dentry && real_path.dentry->d_sb) {
@@ -1590,7 +1609,6 @@ index 000000000..0b596ea48
 +	if (depth > 20)
 +		return;
 +
-+	/* Existing path on real fs means all ancestors exist too */
 +	{
 +		struct path check;
 +		if (kern_path(v_path, LOOKUP_FOLLOW, &check) == 0) {
@@ -1613,7 +1631,6 @@ index 000000000..0b596ea48
 +	parent_path = path_copy;
 +	name = last_slash + 1;
 +
-+	/* Skip if parent dir is VFS-redirected */
 +	{
 +		u32 parent_hash = full_name_hash(NULL, parent_path,
 +						 strlen(parent_path));
@@ -1716,7 +1733,6 @@ index 000000000..0b596ea48
 +
 +	hash = full_name_hash(NULL, v_path, strlen(v_path));
 +
-+	/* Ensure idempotency and stop memory leaks */
 +	spin_lock(&zeromount_lock);
 +	hash_for_each_safe(zeromount_rules_ht, bkt, tmp, existing_rule, node) {
 +		if (strcmp(existing_rule->virtual_path, v_path) == 0) {
@@ -1751,7 +1767,6 @@ index 000000000..0b596ea48
 +
 +	if (kern_path(r_path, LOOKUP_FOLLOW, &path) == 0) {
 +		struct inode *inode = d_backing_inode(path.dentry);
-+
 +		if (inode) {
 +			rule->real_ino = inode->i_ino;
 +			rule->real_dev = inode->i_sb->s_dev;
@@ -1762,13 +1777,9 @@ index 000000000..0b596ea48
 +		rule->real_dev = 0;
 +	}
 +
-+	/* Capture virtual path's dev/ino for maps spoofing.
-+	 * Replacement rules use real inode; injected files use
-+	 * parent device + generated ino. */
 +	zm_enter();
 +	if (kern_path(v_path, LOOKUP_FOLLOW, &path) == 0) {
 +		struct inode *vinode = d_backing_inode(path.dentry);
-+
 +		if (vinode) {
 +			rule->v_ino = vinode->i_ino;
 +			rule->v_dev = vinode->i_sb->s_dev;
@@ -1778,20 +1789,16 @@ index 000000000..0b596ea48
 +	zm_exit();
 +
 +	if (rule->v_ino == 0) {
-+		rule->v_ino = zeromount_generate_ino(v_path, r_path);
++		rule->v_ino = zeromount_generate_ino(v_path, "");
 +		{
 +			char *parent_copy = kstrdup(v_path, GFP_KERNEL);
-+
 +			if (parent_copy) {
 +				char *slash = strrchr(parent_copy, '/');
-+
 +				if (slash && slash != parent_copy) {
 +					*slash = '\0';
 +					zm_enter();
-+					if (kern_path(parent_copy, LOOKUP_FOLLOW,
-+						      &path) == 0) {
-+						struct inode *pinode =
-+							d_backing_inode(path.dentry);
++					if (kern_path(parent_copy, LOOKUP_FOLLOW, &path) == 0) {
++						struct inode *pinode = d_backing_inode(path.dentry);
 +						if (pinode)
 +							rule->v_dev = pinode->i_sb->s_dev;
 +						path_put(&path);
@@ -1809,7 +1816,6 @@ index 000000000..0b596ea48
 +	ZM_DBG("bloom: add hash=0x%08x path=%s\n", hash, rule->virtual_path);
 +	if (rule->real_ino != 0) {
 +		unsigned long ino_key = rule->real_ino ^ rule->real_dev;
-+
 +		hash_add_rcu(zeromount_ino_ht, &rule->ino_node, ino_key);
 +	}
 +	list_add_tail(&rule->list, &zeromount_rules_list);
