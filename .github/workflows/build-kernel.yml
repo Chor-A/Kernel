@@ -146,7 +146,6 @@ jobs:
 
           # Safety fallback for symbol compatibility
           echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
-          echo "int __attribute__((weak)) susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse) { return 0; }" >> fs/susfs.c
 
           echo "=== 2. Applying Custom Patches (mglru, services, etc.) ==="
           for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
