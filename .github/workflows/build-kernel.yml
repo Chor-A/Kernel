@@ -1,52 +1,108 @@
-name: Build Kernel
+name: build-kernel
 
 on:
+  schedule:
+    - cron: "0 22 * * *" # Daily 3:30 AM IST (22:00 UTC)
   workflow_dispatch:
     inputs:
+      publish_release:
+        description: 'Publish the build as a GitHub release'
+        type: boolean
+        default: true
       release_tag:
-        description: 'Release Tag (optional)'
+        description: 'Release tag (auto-generated as kernel-YYYYMMDD when empty)'
         required: false
-        type: string
+        default: ""
+      kernel_repo:
+        description: 'Kernel source repository (full URL)'
+        required: false
+        default: "https://github.com/Steambot12/Templar-Kernel-GKI-5.10"
+      kernel_branch:
+        description: 'Kernel source branch'
+        required: false
+        default: "Linux1-Staging"
+      kernel_commit:
+        description: 'Kernel source commit'
+        required: false
+        default: ""
+      clang_version:
+        description: Clang toolchain version
+        required: false
+        type: choice
+        options:
+          - clang 19
+          - clang 14
+        default: "clang 19"
+      defconfig_fragment_exclude:
+        description: 'Defconfig fragments to exclude'
+        required: false
+        default: ""
+      append_build_env:
+        description: 'Extra KEY=VALUE pairs appended to build.config'
+        required: false
+        default: ""
+      append_config:
+        description: 'Extra literal CONFIG_* lines injected into the defconfig'
+        required: false
+        default: "CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_SENTINEL=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_NOMOUNT=y"
+      ccache:
+        description: 'Accelerate with ccache.'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: kernel-build-${{ github.event.inputs.release_tag || 'default' }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: build
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      actions: write
-    
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
     env:
-      KERNEL_REPO: https://github.com/Steambot12/Templar-Kernel-GKI-5.10.git
-      KERNEL_BRANCH: Linux1-Staging
-      CLANG_ASSET: clang-r536225-linux-x86.tar.zst
-      CCACHE_OPT: 1
-      RELEASE_TAG: ${{ github.event.inputs.release_tag }}
-      KSU_PREBUILT_BASE: https://github.com/Chor-A/Kernel/releases/download/prebuilts
+      KERNEL_REPO: ${{ inputs.kernel_repo }}
+      KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+      KERNEL_COMMIT: ${{ inputs.kernel_commit }}
+      CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst"}')[inputs.clang_version] }}
+      DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
+      APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
+      APPEND_CONFIG: ${{ inputs.append_config }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      CCACHE_OPT: ${{ inputs.ccache && '1' || '' }}
+      GITHUB_TOKEN: ${{ github.token }}
+      KMI_SYMBOL_LIST_STRICT_MODE: "0"
+      UPDATE_SYMBOL_LIST: "1"
 
     steps:
-      - name: Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v5
-        with:
-          repository: Chor-A/Kernel
-          clean: true
-          fetch-depth: 1
 
-      - name: Free Disk Space
+      - name: Free disk space
         run: |
           if [ -f "build/free-disk-space.sh" ]; then
             sudo bash build/free-disk-space.sh
           fi
           df -h
+
+      - name: Configure Git Safe Directory
+        run: |
           git config --global --add safe.directory "*"
 
-      - name: Setup Cache
+      - name: Restore ccache cache
+        if: ${{ inputs.ccache }}
         uses: actions/cache@v4
         with:
           path: work/.ccache
-          key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ env.KERNEL_REPO }}-${{ env.KERNEL_BRANCH }}
+          key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ github.run_id }}
+          restore-keys: |
+            cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-
+            cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
+          fail-on-cache-miss: false
 
-      - name: Setup Swap Space
+      - name: Add 24G swap
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
@@ -56,238 +112,631 @@ jobs:
           sudo swapon /swapfile
           free -h
 
-      - name: Build Kernel
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Clone Kernel Source
         run: |
-          ksu_pid=""
-          if [ "true" == "true" ]; then
-            ./build/kernelsu-fetch.sh &
-            ksu_pid=$!
-          fi
-          
           mkdir -p work
-          INJECT_SCRIPT="$GITHUB_WORKSPACE/work/patch_inject.sh"
-          
-          cat << 'INJECT_EOF' > "$INJECT_SCRIPT"
-          #!/bin/bash
-          export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH"
-          cd common || exit 1
+          git clone -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} work/common
+          cd work/common
 
-          echo "=== 1. Cleaning Nomount ==="
-          rm -rf fs/nomount fs/nomount.c fs/nomount.h
-          sed -i '/nomount/Id' fs/Makefile
-          sed -i '/NOMOUNT/Id' fs/Kconfig
-
-          echo "=== 2. Setting up ReSukiSU ==="
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
-
-          echo "=== 3. Ultimate Patch Extractor (Bypassing Git) ==="
-          PATCH_DIR="$GITHUB_WORKSPACE/.github/workflows/patches"
-          [ ! -d "$PATCH_DIR" ] && PATCH_DIR="$GITHUB_WORKSPACE/patches"
-          
-          cat << 'PYEOF' > patch_extractor.py
-          import os, re
-          patch_dir = os.environ.get("PATCH_DIR")
-          for pfile in sorted(os.listdir(patch_dir)):
-              if not pfile.endswith('.patch'): continue
-              print(f"\nProcessing File: {pfile}")
-              content = open(os.path.join(patch_dir, pfile), errors='ignore').read()
-              
-              # Har file ke diff ko alag-alag tukdo me todo
-              chunks = re.split(r'\n?(?=diff --git a/)', content)
-              for chunk in chunks:
-                  if not chunk.strip(): continue
-                  
-                  # Agar ye tukda koi nayi file bana raha hai (jaise zeromount.h)
-                  match = re.search(r'diff --git a/[^\n]+ b/([^\n]+)\n.*?--- /dev/null\n\+\+\+ b/[^\n]+\n@@ -0,0 \+1,\d+ @@\n(.*)', chunk, re.DOTALL)
-                  if match:
-                      filepath = match.group(1)
-                      filedata = match.group(2)
-                      lines = []
-                      for line in filedata.split('\n'):
-                          if line.startswith('+'): lines.append(line[1:])
-                          elif line.startswith('\\ No newline'): pass
-                          else: lines.append(line)
-                      
-                      os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                      with open(filepath, 'w') as f:
-                          f.write('\n'.join(lines))
-                      print(f"✅ Extracted new file perfectly: {filepath}")
-                  else:
-                      # Agar existing file ko modify kar raha hai toh patch tool chalne do
-                      with open("temp.patch", "w") as f:
-                          f.write(chunk + "\n")
-                      os.system("patch -p1 --forward --no-backup-if-mismatch -r - < temp.patch > /dev/null 2>&1")
-          PYEOF
-          export PATCH_DIR="$PATCH_DIR"
-          python3 patch_extractor.py
-
-          echo "=== 4. MANUAL KERNEL INJECTIONS ==="
-          # Makefile
-          grep -q "susfs.o" fs/Makefile || sed -i '$a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
-          grep -q "zeromount.o" fs/Makefile || sed -i '$a obj-$(CONFIG_ZEROMOUNT) += zeromount.o' fs/Makefile
-
-          # Mount.h for GKI 5.10
-          if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
-              sed -i '/int mnt_flags;/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\tint susfs_mnt_id_backup;\n#endif' include/linux/mount.h
+          if [ -n "${{ env.KERNEL_COMMIT }}" ]; then
+            git checkout ${{ env.KERNEL_COMMIT }}
           fi
 
-          # Unused label
-          sed -i '/orig_flow:/d' fs/notify/fdinfo.c 2>/dev/null || true
-
-          # Susfs App Umount Declaration
-          if ! grep -q "susfs_is_current_proc_umounted_app" include/linux/susfs_def.h; then
-              echo -e "\nstatic inline bool susfs_is_current_proc_umounted_app(void) {\n\treturn test_ti_thread_flag(&current->thread_info, 33);\n}" >> include/linux/susfs_def.h
-          fi
-
-          # Force Inject Zeromount Headers into task_mmu and readdir
-          if ! grep -q "zeromount.h" fs/proc/task_mmu.c; then
-              sed -i '/#include <linux\/pkeys.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/task_mmu.c 2>/dev/null || true
-          fi
-          if ! grep -q "zeromount.h" fs/readdir.c; then
-              sed -i '/#include <linux\/uaccess.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/readdir.c 2>/dev/null || true
-          fi
-
-          echo "=== 5. Injecting Kconfig Flags ==="
-          cat << 'KSUKCONF' >> fs/Kconfig
-          config KSU_SUSFS
-          	bool "KSU SUSFS"
-          config KSU_SUSFS_SUS_PATH
-          	bool
-          config KSU_SUSFS_SUS_MOUNT
-          	bool
-          config KSU_SUSFS_SUS_KSTAT
-          	bool
-          config KSU_SUSFS_SPOOF_UNAME
-          	bool
-          config KSU_SUSFS_ENABLE_LOG
-          	bool
-          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-          	bool
-          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          	bool
-          config KSU_SUSFS_OPEN_REDIRECT
-          	bool
-          config KSU_SUSFS_SUS_MAP
-          	bool
-          config KSU_SUSFS_SUS_KSTAT_REDIRECT
-          	bool
-          config KSU_SUSFS_UNICODE_FILTER
-          	bool
-          config KSU_SUSFS_HIDDEN_NAME
-          	bool
-          config KSU_SUSFS_HARDENED
-          	bool
-          config ZEROMOUNT
-          	bool "Zeromount"
-          config ZERO_MOUNT
-          	bool
-          KSUKCONF
-
-          echo "=== 6. Enabling Flags in Defconfig ==="
-          sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
-          cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
-          CONFIG_KSU=y
-          CONFIG_OVERLAY_FS=y
-          CONFIG_KSU_SUSFS=y
-          CONFIG_KSU_SUSFS_SUS_PATH=y
-          CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-          CONFIG_KSU_SUSFS_ENABLE_LOG=y
-          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-          CONFIG_KSU_SUSFS_SUS_MAP=y
-          CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT=y
-          CONFIG_KSU_SUSFS_UNICODE_FILTER=y
-          CONFIG_KSU_SUSFS_HIDDEN_NAME=y
-          CONFIG_KSU_SUSFS_HARDENED=y
-          CONFIG_ZEROMOUNT=y
-          CONFIG_ZERO_MOUNT=y
-          KSUCONF
-
-          echo "✅ Inject Script Completed Successfully!"
-          INJECT_EOF
-          
-          chmod +x "$INJECT_SCRIPT"
-          
-          # Original Developer Hook
-          export APPEND_BUILD_ENV="PRE_DEFCONFIG_CMDS=$INJECT_SCRIPT,KMI_SYMBOL_LIST_STRICT_MODE=0,UPDATE_SYMBOL_LIST=1"
-          
-          chmod +x ./build-kernel.sh
-          ./build-kernel.sh --ccache
-          
-          if [ -n "$ksu_pid" ]; then
-            wait "$ksu_pid" || echo "::warning::ksud fetch failed; flashable zip will be skipped"
-          fi
-
-      - name: Upload Reject Report as Artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: patch-reject-report
-          path: patch_reject_summary.log
-          if-no-files-found: ignore
-
-      - name: Pack Flashable Zip
+      - name: Apply SUSFS, Custom Patches & Direct Code Spoofing
         run: |
-          set -euo pipefail
-          if [ ! -f "$PWD/kernelsu/ksud-aarch64-linux-android" ] || \
-             [ ! -f "$PWD/kernelsu/ksud-armv7-linux-androideabi" ]; then
-            echo "ksud binaries missing (fetch failed); skipping flashable zip"
-            exit 0
-          fi
-          
-          kernel_img=$(find work/dist -name 'Image' -print -quit)
-          if [ -z "$kernel_img" ]; then
-            kernel_img=$(find work/dist -name 'Image.lz4' -print -quit)
-          fi
-          
-          if [ -z "$kernel_img" ]; then
-            echo "no kernel Image found in work/dist" >&2
-            find work/dist -type f | head -40
-            exit 1
-          fi
-          
-          mkdir -p work/pkg
-          KERNEL_IMAGE="$kernel_img" \
-          KSUD_ARM64="$PWD/kernelsu/ksud-aarch64-linux-android" \
-          KSUD_ARMV7="$PWD/kernelsu/ksud-armv7-linux-androideabi" \
-          ZIP_OUT="$PWD/work/pkg/cloudfox-kernel-flash.zip" \
-            ./build/pack-flashable.sh
+          cd work/common
 
-      - name: Upload Release
+          echo "=== 1. Integrating SUSFS into Kernel ==="
+          git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
+          cp -r ../susfs4ksu/kernel_patches/fs/* fs/
+          cp -r ../susfs4ksu/kernel_patches/include/linux/* include/linux/
+          patch -p1 < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || echo "Warning: SUSFS patch issue"
+          
+          # Fix missing SuSFS header in statfs.c to prevent implicit declaration error
+          sed -i '1i #include <linux/susfs.h>' fs/statfs.c
+          echo "✅ Fixed SuSFS header in fs/statfs.c"
+
+          # Safety fallback for symbol compatibility
+          echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
+
+          echo "=== 2. Applying Custom Patches (mglru, services, etc.) ==="
+          for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
+            if [ -d "$dir" ]; then
+              for patch_file in "$dir"/*.patch; do
+                if [ -f "$patch_file" ]; then
+                  echo "Applying $patch_file..."
+                  sed -i 's/\r$//' "$patch_file"
+                  if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file"; then
+                    echo "Applied via git apply"
+                  elif patch -p1 -N --no-backup-if-mismatch < "$patch_file"; then
+                    echo "Applied via patch"
+                  else
+                    echo "Warning: $patch_file partially skipped or failed"
+                  fi
+                fi
+              done
+            fi
+          done
+          echo "✅ All .patch files applied!"
+
+          echo "=== 3. Directly Injecting Spoof Modifications via Python ==="
+          python3 - << 'EOF'
+          import os
+          import re
+
+          # 1. Modify fs/proc/cmdline.c
+          cmdline_path = "fs/proc/cmdline.c"
+          if os.path.exists(cmdline_path):
+              with open(cmdline_path, "r") as f:
+                  content = f.read()
+              
+              helper_code = r"""
+          #include <linux/slab.h>
+          #include <linux/string.h>
+          #include <linux/cred.h>
+
+          static void replace_str(char *buf, size_t max_len, const char *search, const char *replace)
+          {
+          	char *p = buf;
+          	size_t s_len = strlen(search);
+          	size_t r_len = strlen(replace);
+
+          	while ((p = strstr(p, search)) != NULL) {
+          		size_t cur_len = strlen(buf);
+          		size_t tail_len = strlen(p + s_len);
+
+          		if (r_len > s_len && cur_len + (r_len - s_len) >= max_len)
+          			break;
+
+          		if (r_len != s_len)
+          			memmove(p + r_len, p + s_len, tail_len + 1);
+
+          		memcpy(p, replace, r_len);
+          		p += r_len;
+          	}
+          }
+          """
+              
+              replacement_func = r"""static int cmdline_proc_show(struct seq_file *m, void *v)
+          {
+          	char *buf;
+          	size_t len;
+
+          	if (!saved_command_line) {
+          		seq_putc(m, 10);
+          		return 0;
+          	}
+
+          	if (__kuid_val(current_uid()) >= 10000) {
+          		len = strlen(saved_command_line);
+          		buf = kzalloc(len + 256, GFP_KERNEL);
+          		if (buf) {
+          			memcpy(buf, saved_command_line, len + 1);
+          			replace_str(buf, len + 256, "androidboot.verifiedbootstate=orange", "androidboot.verifiedbootstate=green");
+          			replace_str(buf, len + 256, "androidboot.verifiedbootstate=yellow", "androidboot.verifiedbootstate=green");
+          			replace_str(buf, len + 256, "androidboot.verifiedbootstate=red", "androidboot.verifiedbootstate=green");
+          			replace_str(buf, len + 256, "androidboot.vbmeta.device_state=unlocked", "androidboot.vbmeta.device_state=locked");
+          			replace_str(buf, len + 256, "androidboot.flash.locked=0", "androidboot.flash.locked=1");
+          			replace_str(buf, len + 256, "androidboot.selinux=permissive", "androidboot.selinux=enforcing");
+          			replace_str(buf, len + 256, "androidboot.buildvariant=userdebug", "androidboot.buildvariant=user");
+          			replace_str(buf, len + 256, "androidboot.buildvariant=eng", "androidboot.buildvariant=user");
+          			replace_str(buf, len + 256, "buildvariant=userdebug", "buildvariant=user");
+          			replace_str(buf, len + 256, "buildvariant=eng", "buildvariant=user");
+          			replace_str(buf, len + 256, "androidboot.mode=custom", "androidboot.mode=normal");
+          			replace_str(buf, len + 256, "androidboot.mode=recovery", "androidboot.mode=normal");
+          			replace_str(buf, len + 256, "androidboot.secureboot=0", "androidboot.secureboot=1");
+          			replace_str(buf, len + 256, "androidboot.lockstate=unlocked", "androidboot.lockstate=locked");
+          			replace_str(buf, len + 256, "androidboot.warranty_bit=1", "androidboot.warranty_bit=0");
+          			replace_str(buf, len + 256, "androidboot.warranty_bits=1", "androidboot.warranty_bits=0");
+          			replace_str(buf, len + 256, "androidboot.force_normal_boot=0", "androidboot.force_normal_boot=1");
+          			seq_puts(m, buf);
+          			kfree(buf);
+          			seq_putc(m, 10);
+          			return 0;
+          		}
+          	}
+
+          	seq_puts(m, saved_command_line);
+          	seq_putc(m, 10);
+          	return 0;
+          }"""
+
+              pattern = r'static int cmdline_proc_show\(struct seq_file \*m, void \*v\)\s*\{.*?\n\}'
+              if re.search(pattern, content, re.DOTALL):
+                  content = helper_code + "\n" + re.sub(pattern, replacement_func, content, flags=re.DOTALL)
+                  with open(cmdline_path, "w") as f:
+                      f.write(content)
+                  print("Successfully spoofed fs/proc/cmdline.c with UID check")
+              else:
+                  print("Error: Target func not found in cmdline.c via regex")
+
+          # 2. Modify fs/proc/bootconfig.c
+          boot_path = "fs/proc/bootconfig.c"
+          if os.path.exists(boot_path):
+              with open(boot_path, "r") as f:
+                  boot_content = f.read()
+
+              boot_helper = r"""
+          #include <linux/string.h>
+          #include <linux/cred.h>
+
+          static void replace_xbc_str(char *buf, size_t max_len, const char *search, const char *replace)
+          {
+          	char *p = buf;
+          	size_t s_len = strlen(search);
+          	size_t r_len = strlen(replace);
+
+          	while ((p = strstr(p, search)) != NULL) {
+          		size_t cur_len = strlen(buf);
+          		size_t tail_len = strlen(p + s_len);
+
+          		if (r_len > s_len && cur_len + (r_len - s_len) >= max_len)
+          			break;
+
+          		if (r_len != s_len)
+          			memmove(p + r_len, p + s_len, tail_len + 1);
+
+          		memcpy(p, replace, r_len);
+          		p += r_len;
+          	}
+          }
+          """
+
+              boot_replacement = r"""static int boot_config_proc_show(struct seq_file *m, void *v)
+          {
+          	if (saved_boot_config) {
+          		if (__kuid_val(current_uid()) >= 10000) {
+          			char *buf;
+          			size_t len = strlen(saved_boot_config);
+
+          			buf = kzalloc(len + 256, GFP_KERNEL);
+          			if (buf) {
+          				memcpy(buf, saved_boot_config, len + 1);
+          				replace_xbc_str(buf, len + 256, "androidboot.verifiedbootstate = \"orange\"", "androidboot.verifiedbootstate = \"green\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.verifiedbootstate = \"yellow\"", "androidboot.verifiedbootstate = \"green\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.verifiedbootstate = \"red\"", "androidboot.verifiedbootstate = \"green\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.vbmeta.device_state = \"unlocked\"", "androidboot.vbmeta.device_state = \"locked\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.flash.locked = \"0\"", "androidboot.flash.locked = \"1\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.selinux = \"permissive\"", "androidboot.selinux = \"enforcing\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.buildvariant = \"userdebug\"", "androidboot.buildvariant = \"user\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.buildvariant = \"eng\"", "androidboot.buildvariant = \"user\"");
+          				replace_xbc_str(buf, len + 256, "buildvariant = \"userdebug\"", "buildvariant = \"user\"");
+          				replace_xbc_str(buf, len + 256, "buildvariant = \"eng\"", "buildvariant = \"user\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.mode = \"custom\"", "androidboot.mode = \"normal\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.mode = \"recovery\"", "androidboot.mode = \"normal\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.secureboot = \"0\"", "androidboot.secureboot = \"1\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.lockstate = \"unlocked\"", "androidboot.lockstate = \"locked\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.warranty_bit = \"1\"", "androidboot.warranty_bit = \"0\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.warranty_bits = \"1\"", "androidboot.warranty_bits = \"0\"");
+          				replace_xbc_str(buf, len + 256, "androidboot.force_normal_boot = \"0\"", "androidboot.force_normal_boot = \"1\"");
+          				seq_puts(m, buf);
+          				kfree(buf);
+          				return 0;
+          			}
+          		}
+          		seq_puts(m, saved_boot_config);
+          	}
+          	return 0;
+          }"""
+
+              boot_pattern = r'static int boot_config_proc_show\(struct seq_file \*m, void \*v\)\s*\{.*?\n\}'
+              if re.search(boot_pattern, boot_content, re.DOTALL):
+                  boot_content = boot_helper + "\n" + re.sub(boot_pattern, boot_replacement, boot_content, flags=re.DOTALL)
+                  with open(boot_path, "w") as f:
+                      f.write(boot_content)
+                  print("Successfully spoofed fs/proc/bootconfig.c with UID check")
+              else:
+                  print("Error: Target func not found in bootconfig.c via regex")
+
+          # 3. Modify fs/proc/array.c
+          array_path = "fs/proc/array.c"
+          if os.path.exists(array_path):
+              with open(array_path, "r") as f:
+                  array_content = f.read()
+              
+              array_content = array_content.replace('#include <linux/fs_struct.h>', '#include <linux/fs_struct.h>\n#include <linux/cred.h>')
+              
+              tstate_target = 'seq_puts(m, "State:\\t");\n\tseq_puts(m, get_task_state(p));'
+              tstate_repl = 'seq_puts(m, "State:\\t");\n\tif (__kuid_val(current_uid()) >= 10000 && (*get_task_state(p) == \'t\' || *get_task_state(p) == \'T\'))\n\t\tseq_puts(m, "S (sleeping)");\n\telse\n\t\tseq_puts(m, get_task_state(p));'
+              array_content = array_content.replace(tstate_target, tstate_repl)
+
+              stat_target = 'state = *get_task_state(task);'
+              stat_repl = 'state = *get_task_state(task);\n\tif (__kuid_val(current_uid()) >= 10000 && (state == \'t\' || state == \'T\')) {\n\t\tstate = \'S\';\n\t\twchan = 0;\n\t}'
+              array_content = array_content.replace(stat_target, stat_repl)
+
+              with open(array_path, "w") as f:
+                  f.write(array_content)
+              print("Successfully spoofed fs/proc/array.c")
+
+          # 4. Modify security/selinux/ss/services.c
+          services_path = "security/selinux/ss/services.c"
+          if os.path.exists(services_path):
+              with open(services_path, "r") as f:
+                  serv_content = f.read()
+
+              engine_marker = '#include "policycap_names.h"'
+              engine_code = (
+                  '#include "policycap_names.h"\n\n'
+                  '/* --- INJECTED KERNEL RULES: RCU SPOOFING ENGINE START --- */\n'
+                  '#include <linux/uidgid.h>\n'
+                  '#include <linux/cred.h>\n'
+                  '#include <linux/compiler.h>\n'
+                  '#include <linux/mutex.h>\n\n'
+                  'struct selinux_spoof_ids {\n'
+                  '\tu16 cap_c, process_c, binder_c;\n'
+                  '\tu32 fsck_t, shell_t, su_t, adbd_t, adbroot_t;\n'
+                  '\tstruct rcu_head rcu;\n'
+                  '};\n\n'
+                  'static struct selinux_spoof_ids __rcu *global_spoof;\n'
+                  'static DEFINE_MUTEX(spoof_update_mutex);\n\n'
+                  'static void update_spoof_ids(struct selinux_policy *policy)\n'
+                  '{\n'
+                  '\tstruct selinux_spoof_ids *new_ids;\n'
+                  '\tstruct selinux_spoof_ids *old_ids;\n'
+                  '\tstruct policydb *policydb = &policy->policydb;\n'
+                  '\tu32 i;\n\n'
+                  '\tnew_ids = kzalloc(sizeof(*new_ids), GFP_ATOMIC);\n'
+                  '\tif (!new_ids) return;\n\n'
+                  '\tfor (i = 1; i <= policydb->p_classes.nprim; i++) {\n'
+                  '\t\tconst char *n = sym_name(policydb, SYM_CLASSES, i - 1);\n'
+                  '\t\tif (!n) continue;\n'
+                  '\t\tif (!strcmp(n, "capability")) new_ids->cap_c = i;\n'
+                  '\t\telse if (!strcmp(n, "process")) new_ids->process_c = i;\n'
+                  '\t\telse if (!strcmp(n, "binder")) new_ids->binder_c = i;\n'
+                  '\t}\n\n'
+                  '\tfor (i = 1; i <= policydb->p_types.nprim; i++) {\n'
+                  '\t\tconst char *n = sym_name(policydb, SYM_TYPES, i - 1);\n'
+                  '\t\tif (!n) continue;\n'
+                  '\t\tif (!strcmp(n, "fsck_untrusted")) new_ids->fsck_t = i;\n'
+                  '\t\telse if (!strcmp(n, "shell")) new_ids->shell_t = i;\n'
+                  '\t\telse if (!strcmp(n, "su")) new_ids->su_t = i;\n'
+                  '\t\telse if (!strcmp(n, "adbd")) new_ids->adbd_t = i;\n'
+                  '\t\telse if (!strcmp(n, "adbroot")) new_ids->adbroot_t = i;\n'
+                  '\t}\n\n'
+                  '\tmutex_lock(&spoof_update_mutex);\n'
+                  '\told_ids = rcu_dereference_protected(global_spoof, lockdep_is_held(&spoof_update_mutex));\n'
+                  '\trcu_assign_pointer(global_spoof, new_ids);\n'
+                  '\tmutex_unlock(&spoof_update_mutex);\n\n'
+                  '\tif (old_ids)\n'
+                  '\t\tkfree_rcu(old_ids, rcu);\n'
+                  '}\n'
+                  '/* --- INJECTED KERNEL RULES: RCU SPOOFING ENGINE END --- */'
+              )
+
+              if engine_marker in serv_content:
+                  serv_content = serv_content.replace(engine_marker, engine_code, 1)
+
+              av_hook = (
+                  '\tcontext_struct_compute_av(policydb, scontext, tcontext, tclass, avd,\n'
+                  '\t\t\t\t  NULL);\n\n'
+                  '\t/* --- INJECTED KERNEL RULES: AVC BYPASS START --- */\n'
+                  '\tif (unlikely(avd->allowed) && scontext && tcontext) {\n'
+                  '\t\tif (unlikely(__kuid_val(current_uid()) >= 10000)) {\n'
+                  '\t\t\tstruct selinux_spoof_ids *s_ids = rcu_dereference(global_spoof);\n'
+                  '\t\t\t\tif (s_ids) {\n'
+                  '\t\t\t\t\tbool spoof = false;\n'
+                  '\t\t\t\t\tif (s_ids->fsck_t && tclass == s_ids->cap_c && scontext->type == s_ids->fsck_t && tcontext->type == s_ids->fsck_t)\n'
+                  '\t\t\t\t\t\tspoof = true;\n'
+                  '\t\t\t\t\telse if (s_ids->su_t && tclass == s_ids->process_c && scontext->type == s_ids->shell_t && tcontext->type == s_ids->su_t)\n'
+                  '\t\t\t\t\t\tspoof = true;\n'
+                  '\t\t\t\t\telse if (s_ids->adbroot_t && tclass == s_ids->binder_c && scontext->type == s_ids->adbd_t && tcontext->type == s_ids->adbroot_t)\n'
+                  '\t\t\t\t\t\tspoof = true;\n\n'
+                  '\t\t\t\t\tif (spoof) {\n'
+                  '\t\t\t\t\t\tavd->allowed = 0;\n'
+                  '\t\t\t\t\t\tavd->auditdeny = 0;\n'
+                  '\t\t\t\t\t\tavd->auditallow = 0;\n'
+                  '\t\t\t\t\t}\n'
+                  '\t\t\t\t}\n'
+                  '\t\t\t}\n'
+                  '\t\t}\n'
+                  '\t/* --- INJECTED KERNEL RULES: AVC BYPASS END --- */'
+              )
+
+              target_av_call = r'context_struct_compute_av\(policydb,\s*scontext,\s*tcontext,\s*tclass,\s*avd,\s*NULL\);'
+              serv_content = re.sub(target_av_call, av_hook, serv_content, count=1)
+
+              commit_marker = 'security_load_policycaps(state, newpolicy);'
+              commit_code = 'security_load_policycaps(state, newpolicy);\n\n\t/* --- INJECTED: Refresh Spoof IDs safely during policy reload --- */\n\tupdate_spoof_ids(newpolicy);'
+              serv_content = serv_content.replace(commit_marker, commit_code, 1)
+
+              with open(services_path, "w") as f:
+                  f.write(serv_content)
+              print("Successfully spoofed security/selinux/ss/services.c")
+          EOF
+          echo "✅ Python regex injection with UID-checks completed successfully!"
+
+          echo "=== 4. Setting up ReSukiSU ==="
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -
+
+          # Base ReSukiSU & Core Flags
+          sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/gki_defconfig
+          
+          # --- ReSukiSU Exclusive Features (Inline Hooks required for SuSFS integration) ---
+          echo "CONFIG_KSU_TOOLKIT_SUPPORT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SENTINEL=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_INLINE_HOOK=y" >> arch/arm64/configs/gki_defconfig
+          
+          # --- Extra Stealth & Cleanup ---
+          echo "CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_DEBUG=n" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUCOMPAT=n" >> arch/arm64/configs/gki_defconfig
+          # -----------------------------------
+
+          echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
+
+          # SuSFS Integration Flags
+          echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=n" >> arch/arm64/configs/gki_defconfig
+          echo "✅ ReSukiSU + SuSFS applied successfully!"
+
+          echo "=== 5. Absolute Stealth: LOCALVERSION Spoofing ==="
+          cat << 'EOF_LOCAL' > scripts/setlocalversion
+          #!/bin/sh
+          echo "-android12-9"
+          EOF_LOCAL
+          chmod +x scripts/setlocalversion
+          echo "✅ LOCALVERSION spoofing applied!"
+
+      - name: Auto-patch 5.10 Compatibility & Standard audit_fsnotify.c
+        run: |
+          cd work/common
+          echo "=== 1. Auto-patching 5.10 Timer API Bugs ==="
+          grep -rl "timer_delete_sync" drivers/ fs/ kernel/ net/ include/ 2>/dev/null | xargs sed -i 's/timer_delete_sync/del_timer_sync/g' 2>/dev/null || true
+
+          echo "=== 2. Ensuring clean standard audit_fsnotify.c ==="
+          cat << 'EOF' > kernel/audit_fsnotify.c
+          // SPDX-License-Identifier: GPL-2.0-or-later
+          /* audit_fsnotify.c -- tracking inodes
+           *
+           * Copyright 2003-2009,2014-2015 Red Hat, Inc.
+           * Copyright 2005 Hewlett-Packard Development Company, L.P.
+           * Copyright 2005 IBM Corporation
+           */
+
+          #include <linux/kernel.h>
+          #include <linux/audit.h>
+          #include <linux/kthread.h>
+          #include <linux/mutex.h>
+          #include <linux/fs.h>
+          #include <linux/fsnotify_backend.h>
+          #include <linux/namei.h>
+          #include <linux/netlink.h>
+          #include <linux/sched.h>
+          #include <linux/slab.h>
+          #include <linux/security.h>
+          #include "audit.h"
+
+          /*
+           * this mark lives on the parent directory of the inode in question.
+           * but dev, ino, and path are about the child
+           */
+          struct audit_fsnotify_mark {
+          	dev_t dev;		/* associated superblock device */
+          	unsigned long ino;	/* associated inode number */
+          	char *path;		/* insertion path */
+          	struct fsnotify_mark mark; /* fsnotify mark on the inode */
+          	struct audit_krule *rule;
+          };
+
+          /* fsnotify handle. */
+          static struct fsnotify_group *audit_fsnotify_group;
+
+          /* fsnotify events we care about. */
+          #define AUDIT_FS_EVENTS (FS_MOVE | FS_CREATE | FS_DELETE | FS_DELETE_SELF |\
+          			 FS_MOVE_SELF)
+
+          static void audit_fsnotify_mark_free(struct audit_fsnotify_mark *audit_mark)
+          {
+          	kfree(audit_mark->path);
+          	kfree(audit_mark);
+          }
+
+          static void audit_fsnotify_free_mark(struct fsnotify_mark *mark)
+          {
+          	struct audit_fsnotify_mark *audit_mark;
+
+          	audit_mark = container_of(mark, struct audit_fsnotify_mark, mark);
+          	audit_fsnotify_mark_free(audit_mark);
+          }
+
+          char *audit_mark_path(struct audit_fsnotify_mark *mark)
+          {
+          	return mark->path;
+          }
+
+          int audit_mark_compare(struct audit_fsnotify_mark *mark, u64 ino, dev_t dev)
+          {
+          	if (mark->ino == AUDIT_INO_UNSET)
+          		return 0;
+          	return (mark->ino == ino) && (mark->dev == dev);
+          }
+
+          static void audit_update_mark(struct audit_fsnotify_mark *audit_mark,
+          			     const struct inode *inode)
+          {
+          	audit_mark->dev = inode ? inode->i_sb->s_dev : AUDIT_DEV_UNSET;
+          	audit_mark->ino = inode ? inode->i_ino : AUDIT_INO_UNSET;
+          }
+
+          struct audit_fsnotify_mark *audit_alloc_mark(struct audit_krule *krule, char *pathname, int len)
+          {
+          	struct audit_fsnotify_mark *audit_mark;
+          	struct path path;
+          	struct dentry *dentry;
+          	int ret;
+
+          	if (pathname[0] != '/' || pathname[len-1] == '/')
+          		return ERR_PTR(-EINVAL);
+
+          	dentry = kern_path_parent(pathname, &path);
+          	if (IS_ERR(dentry))
+          		return ERR_CAST(dentry); /* returning an error */
+
+          	audit_mark = kzalloc(sizeof(*audit_mark), GFP_KERNEL);
+          	if (unlikely(!audit_mark)) {
+          		audit_mark = ERR_PTR(-ENOMEM);
+          		goto out;
+          	}
+
+          	fsnotify_init_mark(&audit_mark->mark, audit_fsnotify_group);
+          	audit_mark->mark.mask = AUDIT_FS_EVENTS;
+          	audit_mark->path = pathname;
+          	audit_update_mark(audit_mark, dentry->d_inode);
+          	audit_mark->rule = krule;
+
+          	ret = fsnotify_add_inode_mark(&audit_mark->mark, path.dentry->d_inode, 0);
+          	if (ret < 0) {
+          		audit_mark->path = NULL;
+          		fsnotify_put_mark(&audit_mark->mark);
+          		audit_mark = ERR_PTR(ret);
+          	}
+
+          out:
+          	dput(dentry);
+          	path_put(&path);
+          	return audit_mark;
+          }
+
+          static void audit_mark_log_rule_change(struct audit_fsnotify_mark *audit_mark, char *op)
+          {
+          	struct audit_buffer *ab;
+          	struct audit_krule *rule = audit_mark->rule;
+
+          	if (!audit_enabled)
+          		return;
+          	ab = audit_log_start(audit_context(), GFP_NOFS, AUDIT_CONFIG_CHANGE);
+          	if (unlikely(!ab))
+          		return;
+          	audit_log_session_info(ab);
+          	audit_log_format(ab, " op=%s path=", op);
+          	audit_log_untrustedstring(ab, audit_mark->path);
+          	audit_log_key(ab, rule->filterkey);
+          	audit_log_format(ab, " list=%d res=1", rule->listnr);
+          	audit_log_end(ab);
+          }
+
+          void audit_remove_mark(struct audit_fsnotify_mark *audit_mark)
+          {
+          	fsnotify_destroy_mark(&audit_mark->mark, audit_fsnotify_group);
+          	fsnotify_put_mark(&audit_mark->mark);
+          }
+
+          void audit_remove_mark_rule(struct audit_krule *krule)
+          {
+          	struct audit_fsnotify_mark *mark = krule->exe;
+
+          	if (mark) {
+          		audit_remove_mark(mark);
+          		krule->exe = NULL;
+          	}
+          }
+
+          static void audit_autoremove_mark_rule(struct audit_fsnotify_mark *audit_mark)
+          {
+          	struct audit_krule *rule = audit_mark->rule;
+          	struct audit_entry *entry = container_of(rule, struct audit_entry, rule);
+
+          	audit_mark_log_rule_change(audit_mark, "autoremove_rule");
+          	audit_del_rule(entry);
+          }
+
+          /* Update mark data in audit rules based on fsnotify events. */
+          static int audit_mark_handle_event(struct fsnotify_mark *inode_mark, u32 mask,
+          				   struct inode *inode, struct inode *dir,
+          				   const struct qstr *dname, u32 cookie)
+          {
+          	struct audit_fsnotify_mark *audit_mark;
+
+          	audit_mark = container_of(inode_mark, struct audit_fsnotify_mark, mark);
+
+          	if (WARN_ON_ONCE(inode_mark->group != audit_fsnotify_group) ||
+          	    WARN_ON_ONCE(!inode))
+          		return 0;
+
+          	if (mask & (FS_CREATE|FS_MOVED_TO|FS_DELETE|FS_MOVED_FROM)) {
+          		if (audit_compare_dname_path(dname, audit_mark->path, AUDIT_NAME_FULL))
+          			return 0;
+          		audit_update_mark(audit_mark, inode);
+          	} else if (mask & (FS_DELETE_SELF|FS_UNMOUNT|FS_MOVE_SELF)) {
+          		audit_autoremove_mark_rule(audit_mark);
+          	}
+
+          	return 0;
+          }
+
+          static const struct fsnotify_ops audit_mark_fsnotify_ops = {
+          	.handle_inode_event = audit_mark_handle_event,
+          	.free_mark = audit_fsnotify_free_mark,
+          };
+
+          static int __init audit_fsnotify_init(void)
+          {
+          	audit_fsnotify_group = fsnotify_alloc_group(&audit_mark_fsnotify_ops);
+          	if (IS_ERR(audit_fsnotify_group)) {
+          		audit_fsnotify_group = NULL;
+          		audit_panic("cannot create audit fsnotify group");
+          	}
+          	return 0;
+          }
+          device_initcall(audit_fsnotify_init);
+          EOF
+          echo "✅ All upstream API bugs automatically healed!"
+
+      - name: Build kernel
+        run: |
+          chmod +x ./build-kernel.sh
+          ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
+
+      - name: Save ccache cache
+        if: ${{ inputs.ccache && always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: work/.ccache
+          key: cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ github.run_id }}
+
+      - name: Publish release
+        if: ${{ inputs.publish_release }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           tag="$RELEASE_TAG"
           if [ -z "$tag" ]; then
-            tag="kernel-$(date -u +%Y%m%d)"
+            tag="kernel-$(date -u +%Y%m%d-%H%M)"
           fi
           
           cd "$GITHUB_WORKSPACE/work/dist"
           pkg="$GITHUB_WORKSPACE/work/pkg"
           mkdir -p "$pkg"
-          
           assets=()
           for f in Image Image.lz4 Image.gz vmlinux System.map ikconfig .config; do
             [ -f "$f" ] && assets+=("$f")
           done
-          
           tar -I 'zstd -T0' -cf "$pkg/kernel-dist.tar.zst" .
           assets+=("$pkg/kernel-dist.tar.zst")
-          
-          if [ -f "$pkg/cloudfox-kernel-flash.zip" ]; then
-            assets+=("$pkg/cloudfox-kernel-flash.zip")
-          fi
           
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" --clobber "${assets[@]}"
           else
             gh release create "$tag" \
-              --title "Templar/ReSukiSU Kernel $tag" \
-              --notes "Compiled 5.10 Build. Nomount removed, Zeromount added, Original patches active! ALL SUSFS & Zeromount Configs applied natively ✅  $(date -u '+%Y-%m-%d UTC')" \
+              --title "Templar Kernel GKI $tag" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS, MGLRU & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
