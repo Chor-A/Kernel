@@ -144,7 +144,7 @@ jobs:
           sed -i '/#include "internal.h"/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n#endif' fs/statfs.c
           echo "✅ Fixed SuSFS compilation headers and patch structural bugs!"
 
-          # Safety fallback for symbol compatibility (WARNING: Do NOT add spoof_vfs_statfs here to prevent redefinition)
+          # Safety fallback for symbol compatibility
           echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
 
           echo "=== 2. Applying Custom Patches (mglru, services, etc.) ==="
@@ -172,7 +172,7 @@ jobs:
           import os
           import re
 
-          # 1. Modify fs/proc/cmdline.c (CACHE OPTIMIZED & SAFE ESCAPING)
+          # 1. Modify fs/proc/cmdline.c (ULTRA CACHE & DOUBLE-CHECKED LOCK OPTIMIZED)
           cmdline_path = "fs/proc/cmdline.c"
           if os.path.exists(cmdline_path):
               with open(cmdline_path, "r") as f:
@@ -183,6 +183,7 @@ jobs:
           #include <linux/string.h>
           #include <linux/cred.h>
           #include <linux/mutex.h>
+          #include <linux/compiler.h>
 
           static void replace_str(char *buf, size_t max_len, const char *search, const char *replace)
           {
@@ -214,35 +215,39 @@ jobs:
           		return 0;
           	}
 
-          	if (__kuid_val(current_uid()) >= 10000) {
-          		mutex_lock(&spoofed_cmdline_mutex);
-          		if (!spoofed_cmdline) {
-          			size_t len = strlen(saved_command_line);
-          			spoofed_cmdline = kzalloc(len + 256, GFP_KERNEL);
-          			if (spoofed_cmdline) {
-          				memcpy(spoofed_cmdline, saved_command_line, len + 1);
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.verifiedbootstate=orange", "androidboot.verifiedbootstate=green");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.verifiedbootstate=yellow", "androidboot.verifiedbootstate=green");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.verifiedbootstate=red", "androidboot.verifiedbootstate=green");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.vbmeta.device_state=unlocked", "androidboot.vbmeta.device_state=locked");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.flash.locked=0", "androidboot.flash.locked=1");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.selinux=permissive", "androidboot.selinux=enforcing");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.buildvariant=userdebug", "androidboot.buildvariant=user");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.buildvariant=eng", "androidboot.buildvariant=user");
-          				replace_str(spoofed_cmdline, len + 256, "buildvariant=userdebug", "buildvariant=user");
-          				replace_str(spoofed_cmdline, len + 256, "buildvariant=eng", "buildvariant=user");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.mode=custom", "androidboot.mode=normal");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.mode=recovery", "androidboot.mode=normal");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.secureboot=0", "androidboot.secureboot=1");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.lockstate=unlocked", "androidboot.lockstate=locked");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.warranty_bit=1", "androidboot.warranty_bit=0");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.warranty_bits=1", "androidboot.warranty_bits=0");
-          				replace_str(spoofed_cmdline, len + 256, "androidboot.force_normal_boot=0", "androidboot.force_normal_boot=1");
+          	/* App calling uid >= 10000 is likely true for all normal Android usage */
+          	if (likely(__kuid_val(current_uid()) >= 10000)) {
+          		/* Only take the heavy mutex lock if string ISN'T created yet (unlikely scenario after 1st boot check) */
+          		if (unlikely(!spoofed_cmdline)) {
+          			mutex_lock(&spoofed_cmdline_mutex);
+          			if (!spoofed_cmdline) {
+          				size_t len = strlen(saved_command_line);
+          				spoofed_cmdline = kzalloc(len + 256, GFP_KERNEL);
+          				if (spoofed_cmdline) {
+          					memcpy(spoofed_cmdline, saved_command_line, len + 1);
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.verifiedbootstate=orange", "androidboot.verifiedbootstate=green");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.verifiedbootstate=yellow", "androidboot.verifiedbootstate=green");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.verifiedbootstate=red", "androidboot.verifiedbootstate=green");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.vbmeta.device_state=unlocked", "androidboot.vbmeta.device_state=locked");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.flash.locked=0", "androidboot.flash.locked=1");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.selinux=permissive", "androidboot.selinux=enforcing");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.buildvariant=userdebug", "androidboot.buildvariant=user");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.buildvariant=eng", "androidboot.buildvariant=user");
+          					replace_str(spoofed_cmdline, len + 256, "buildvariant=userdebug", "buildvariant=user");
+          					replace_str(spoofed_cmdline, len + 256, "buildvariant=eng", "buildvariant=user");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.mode=custom", "androidboot.mode=normal");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.mode=recovery", "androidboot.mode=normal");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.secureboot=0", "androidboot.secureboot=1");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.lockstate=unlocked", "androidboot.lockstate=locked");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.warranty_bit=1", "androidboot.warranty_bit=0");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.warranty_bits=1", "androidboot.warranty_bits=0");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.force_normal_boot=0", "androidboot.force_normal_boot=1");
+          				}
           			}
+          			mutex_unlock(&spoofed_cmdline_mutex);
           		}
-          		mutex_unlock(&spoofed_cmdline_mutex);
 
-          		if (spoofed_cmdline) {
+          		if (likely(spoofed_cmdline)) {
           			seq_puts(m, spoofed_cmdline);
           			seq_putc(m, 10);
           			return 0;
@@ -259,11 +264,11 @@ jobs:
                   content = helper_code + "\n" + re.sub(pattern, replacement_func, content, flags=re.DOTALL)
                   with open(cmdline_path, "w") as f:
                       f.write(content)
-                  print("Successfully spoofed fs/proc/cmdline.c with Cached Memory Optimization")
+                  print("Successfully spoofed fs/proc/cmdline.c with ULTRA Compiler Optimizations")
               else:
                   print("Error: Target func not found in cmdline.c via regex")
 
-          # 2. Modify fs/proc/bootconfig.c (CACHE OPTIMIZED)
+          # 2. Modify fs/proc/bootconfig.c (ULTRA CACHE & DOUBLE-CHECKED LOCK OPTIMIZED)
           boot_path = "fs/proc/bootconfig.c"
           if os.path.exists(boot_path):
               with open(boot_path, "r") as f:
@@ -274,6 +279,7 @@ jobs:
           #include <linux/cred.h>
           #include <linux/mutex.h>
           #include <linux/slab.h>
+          #include <linux/compiler.h>
 
           static void replace_xbc_str(char *buf, size_t max_len, const char *search, const char *replace)
           {
@@ -301,35 +307,37 @@ jobs:
           static int boot_config_proc_show(struct seq_file *m, void *v)
           {
           	if (saved_boot_config) {
-          		if (__kuid_val(current_uid()) >= 10000) {
-          			mutex_lock(&spoofed_bootconfig_mutex);
-          			if (!spoofed_boot_config) {
-          				size_t len = strlen(saved_boot_config);
-          				spoofed_boot_config = kzalloc(len + 256, GFP_KERNEL);
-          				if (spoofed_boot_config) {
-          					memcpy(spoofed_boot_config, saved_boot_config, len + 1);
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.verifiedbootstate = \"orange\"", "androidboot.verifiedbootstate = \"green\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.verifiedbootstate = \"yellow\"", "androidboot.verifiedbootstate = \"green\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.verifiedbootstate = \"red\"", "androidboot.verifiedbootstate = \"green\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.vbmeta.device_state = \"unlocked\"", "androidboot.vbmeta.device_state = \"locked\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.flash.locked = \"0\"", "androidboot.flash.locked = \"1\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.selinux = \"permissive\"", "androidboot.selinux = \"enforcing\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.buildvariant = \"userdebug\"", "androidboot.buildvariant = \"user\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.buildvariant = \"eng\"", "androidboot.buildvariant = \"user\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "buildvariant = \"userdebug\"", "buildvariant = \"user\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "buildvariant = \"eng\"", "buildvariant = \"user\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.mode = \"custom\"", "androidboot.mode = \"normal\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.mode = \"recovery\"", "androidboot.mode = \"normal\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.secureboot = \"0\"", "androidboot.secureboot = \"1\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.lockstate = \"unlocked\"", "androidboot.lockstate = \"locked\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.warranty_bit = \"1\"", "androidboot.warranty_bit = \"0\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.warranty_bits = \"1\"", "androidboot.warranty_bits = \"0\"");
-          					replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.force_normal_boot = \"0\"", "androidboot.force_normal_boot = \"1\"");
+          		if (likely(__kuid_val(current_uid()) >= 10000)) {
+          			if (unlikely(!spoofed_boot_config)) {
+          				mutex_lock(&spoofed_bootconfig_mutex);
+          				if (!spoofed_boot_config) {
+          					size_t len = strlen(saved_boot_config);
+          					spoofed_boot_config = kzalloc(len + 256, GFP_KERNEL);
+          					if (spoofed_boot_config) {
+          						memcpy(spoofed_boot_config, saved_boot_config, len + 1);
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.verifiedbootstate = \"orange\"", "androidboot.verifiedbootstate = \"green\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.verifiedbootstate = \"yellow\"", "androidboot.verifiedbootstate = \"green\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.verifiedbootstate = \"red\"", "androidboot.verifiedbootstate = \"green\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.vbmeta.device_state = \"unlocked\"", "androidboot.vbmeta.device_state = \"locked\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.flash.locked = \"0\"", "androidboot.flash.locked = \"1\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.selinux = \"permissive\"", "androidboot.selinux = \"enforcing\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.buildvariant = \"userdebug\"", "androidboot.buildvariant = \"user\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.buildvariant = \"eng\"", "androidboot.buildvariant = \"user\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "buildvariant = \"userdebug\"", "buildvariant = \"user\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "buildvariant = \"eng\"", "buildvariant = \"user\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.mode = \"custom\"", "androidboot.mode = \"normal\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.mode = \"recovery\"", "androidboot.mode = \"normal\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.secureboot = \"0\"", "androidboot.secureboot = \"1\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.lockstate = \"unlocked\"", "androidboot.lockstate = \"locked\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.warranty_bit = \"1\"", "androidboot.warranty_bit = \"0\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.warranty_bits = \"1\"", "androidboot.warranty_bits = \"0\"");
+          						replace_xbc_str(spoofed_boot_config, len + 256, "androidboot.force_normal_boot = \"0\"", "androidboot.force_normal_boot = \"1\"");
+          					}
           				}
+          				mutex_unlock(&spoofed_bootconfig_mutex);
           			}
-          			mutex_unlock(&spoofed_bootconfig_mutex);
           			
-          			if (spoofed_boot_config) {
+          			if (likely(spoofed_boot_config)) {
           			    seq_puts(m, spoofed_boot_config);
           			    return 0;
           			}
@@ -344,7 +352,7 @@ jobs:
                   boot_content = boot_helper + "\n" + re.sub(boot_pattern, boot_replacement, boot_content, flags=re.DOTALL)
                   with open(boot_path, "w") as f:
                       f.write(boot_content)
-                  print("Successfully spoofed fs/proc/bootconfig.c with Cached Memory Optimization")
+                  print("Successfully spoofed fs/proc/bootconfig.c with ULTRA Compiler Optimizations")
               else:
                   print("Error: Target func not found in bootconfig.c via regex")
 
