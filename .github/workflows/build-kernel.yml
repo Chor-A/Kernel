@@ -172,7 +172,7 @@ jobs:
           import os
           import re
 
-          # 1. Modify fs/proc/cmdline.c (CACHE OPTIMIZED)
+          # 1. Modify fs/proc/cmdline.c (CACHE OPTIMIZED & SAFE ESCAPING)
           cmdline_path = "fs/proc/cmdline.c"
           if os.path.exists(cmdline_path):
               with open(cmdline_path, "r") as f:
@@ -210,7 +210,7 @@ jobs:
           static int cmdline_proc_show(struct seq_file *m, void *v)
           {
           	if (!saved_command_line) {
-          		seq_putc(m, '\n');
+          		seq_putc(m, 10);
           		return 0;
           	}
 
@@ -244,13 +244,13 @@ jobs:
 
           		if (spoofed_cmdline) {
           			seq_puts(m, spoofed_cmdline);
-          			seq_putc(m, '\n');
+          			seq_putc(m, 10);
           			return 0;
           		}
           	}
 
           	seq_puts(m, saved_command_line);
-          	seq_putc(m, '\n');
+          	seq_putc(m, 10);
           	return 0;
           }"""
 
@@ -740,6 +740,7 @@ jobs:
           }
           device_initcall(audit_fsnotify_init);
           EOF
+          echo "✅ All upstream API bugs automatically healed!"
 
       - name: Build kernel
         run: |
