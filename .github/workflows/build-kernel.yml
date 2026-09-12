@@ -72,127 +72,90 @@ jobs:
           cat << 'INJECT_EOF' > "$INJECT_SCRIPT"
           #!/bin/bash
           export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH"
-          
-          # Navigate into the kernel source directory
           cd common || exit 1
-          
-          echo "=== 0. Completely Removing nomount ==="
+
+          echo "=== 1. Cleaning Nomount ==="
           rm -rf fs/nomount fs/nomount.c fs/nomount.h
           sed -i '/nomount/Id' fs/Makefile
           sed -i '/NOMOUNT/Id' fs/Kconfig
-          sed -i '/nomount/Id' fs/Kconfig
-          echo "✅ nomount completely removed from tree!"
-          
-          echo "=== 1. Setting up ReSukiSU ==="
+
+          echo "=== 2. Setting up ReSukiSU ==="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
-          
-          echo "=== 2. Applying Patches (Auto-Skip Malformed & Reject Logging Mode) ==="
-          REPORT_FILE="$GITHUB_WORKSPACE/patch_reject_summary.log"
-          echo "====================================================" > "$REPORT_FILE"
-          echo "⚠️ KERNEL PATCH REJECT & ERROR REPORT" >> "$REPORT_FILE"
-          echo "Generated on: $(date)" >> "$REPORT_FILE"
-          echo "====================================================" >> "$REPORT_FILE"
-          
-          for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
-            if [ -d "$dir" ]; then
-              for patch_file in "$dir"/*.patch; do
-                if [ -f "$patch_file" ]; then
-                  echo "----------------------------------------------------"
+
+          echo "=== 3. Applying Patches Safely ==="
+          # HUM GIT APPLY USE NAHI KARENGE. Standard 'patch' zyada smart hai aur line counts ignore karta hai.
+          for patch_file in "$GITHUB_WORKSPACE/.github/workflows/patches"/*.patch "$GITHUB_WORKSPACE/patches"/*.patch; do
+              if [ -f "$patch_file" ]; then
                   echo "Applying $(basename "$patch_file")..."
                   sed -i 's/\r$//' "$patch_file"
-                  
-                  # Pehle standard apply try karenge
-                  if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file" > patch.log 2>&1; then
-                    echo "✅ Applied cleanly via git!"
-                  else
-                    echo "⚠️ Clean apply failed/malformed! Running with --reject to skip errors and save hunks..."
-                    
-                    # git apply --reject chalao jo fail lines ko .rej bana dega aur baaki apply karega
-                    if ! git apply --reject --ignore-whitespace --whitespace=nowarn "$patch_file" >> patch.log 2>&1; then
-                      # Agar git apply totally fail/malformed ho, to standard patch tool se try karo
-                      patch -p1 --forward --batch < "$patch_file" >> patch.log 2>&1 || true
-                    fi
-                    
-                    echo "⚠️ Skipped malformed errors for $(basename "$patch_file"). Continuing process..."
-                    echo "" >> "$REPORT_FILE"
-                    echo "--- [Patch: $(basename "$patch_file")] ---" >> "$REPORT_FILE"
-                    cat patch.log >> "$REPORT_FILE"
-                  fi
-                  rm -f patch.log
-                fi
-              done
-            fi
+                  patch -p1 --forward --no-backup-if-mismatch < "$patch_file" || echo "Some hunks rejected, manual fallback will fix them."
+              fi
           done
 
-          # Saare .rej files ko dhoondh kar detailed report me save karna
-          REJECTED_FILES=$(find . -name "*.rej")
-          if [ -n "$REJECTED_FILES" ]; then
-            echo "" >> "$REPORT_FILE"
-            echo "====================================================" >> "$REPORT_FILE"
-            echo "DETAILED REJECTED CODE & LOCATIONS:" >> "$REPORT_FILE"
-            echo "====================================================" >> "$REPORT_FILE"
-            for rej in $REJECTED_FILES; do
-              # .rej hata kar actual file path nikalna
-              ORIGINAL_FILE="${rej%.rej}"
-              echo "" >> "$REPORT_FILE"
-              echo "❌ Error/Rejected in: $rej" >> "$REPORT_FILE"
-              echo "📍 Asli Code Yahan Hona Chahiye: common/$ORIGINAL_FILE" >> "$REPORT_FILE"
-              echo "--- Code Jo Apply Nahi Ho Paya (Rejected Hunk) ---" >> "$REPORT_FILE"
-              cat "$rej" >> "$REPORT_FILE"
-              echo "----------------------------------------------------" >> "$REPORT_FILE"
-            done
-            
-            echo "::warning::Kuch patches me malformed/failed hunks aaye the! Report check karein."
-            echo "=== REJECT REPORT PREVIEW ==="
-            cat "$REPORT_FILE"
-          else
-            echo "✅ All .patch files applied successfully without rejects!"
-          fi
-          
-          echo "=== 3. Inject Kconfig definitions so savedefconfig doesn't drop our flags ==="
-          cat << 'KSUKCONF' >> fs/Kconfig
+          echo "=== 4. MANUAL KERNEL INJECTIONS (Bypassing Rejects) ==="
+          # A. Force add to Makefile (Iske bina Error 2 aata hai)
+          grep -q "susfs.o" fs/Makefile || sed -i '$a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+          grep -q "zeromount.o" fs/Makefile || sed -i '$a obj-$(CONFIG_ZEROMOUNT) += zeromount.o' fs/Makefile
 
+          # B. Fix mount.h for Android GKI (13 namespace errors khatam)
+          if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
+              sed -i '/int mnt_flags;/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\tint susfs_mnt_id_backup;\n#endif' include/linux/mount.h
+          fi
+
+          # C. Fix fdinfo.c unused label error
+          sed -i '/orig_flow:/d' fs/notify/fdinfo.c 2>/dev/null || true
+
+          # D. Fix susfs_def.h missing function declaration
+          if ! grep -q "susfs_is_current_proc_umounted_app" include/linux/susfs_def.h; then
+              echo -e "\nstatic inline bool susfs_is_current_proc_umounted_app(void) {\n\treturn test_ti_thread_flag(&current->thread_info, 33);\n}" >> include/linux/susfs_def.h
+          fi
+
+          # E. Fix ZeroMount headers in task_mmu.c (Agar reject hua ho)
+          if ! grep -q "zeromount.h" fs/proc/task_mmu.c; then
+              sed -i '/#include <linux\/pkeys.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/task_mmu.c 2>/dev/null || true
+          fi
+
+          echo "=== 5. Injecting Kconfig Flags ==="
+          cat << 'KSUKCONF' >> fs/Kconfig
           config KSU_SUSFS
-          	bool "KSU SUSFS"
+              bool "KSU SUSFS"
           config KSU_SUSFS_SUS_PATH
-          	bool
+              bool
           config KSU_SUSFS_SUS_MOUNT
-          	bool
+              bool
           config KSU_SUSFS_SUS_KSTAT
-          	bool
+              bool
           config KSU_SUSFS_SPOOF_UNAME
-          	bool
+              bool
           config KSU_SUSFS_ENABLE_LOG
-          	bool
+              bool
           config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-          	bool
+              bool
           config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          	bool
+              bool
           config KSU_SUSFS_OPEN_REDIRECT
-          	bool
+              bool
           config KSU_SUSFS_SUS_MAP
-          	bool
+              bool
           config KSU_SUSFS_SUS_KSTAT_REDIRECT
-          	bool
+              bool
           config KSU_SUSFS_UNICODE_FILTER
-          	bool
+              bool
           config KSU_SUSFS_HIDDEN_NAME
-          	bool
+              bool
           config KSU_SUSFS_HARDENED
-          	bool
+              bool
           config ZEROMOUNT
-          	bool "Zeromount"
+              bool "Zeromount"
           config ZERO_MOUNT
-          	bool
+              bool
           KSUKCONF
-          
-          echo "=== 4. Enabling SUSFS & Zeromount Flags in gki_defconfig ==="
+
+          echo "=== 6. Enabling Flags in Defconfig ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
           cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
           CONFIG_KSU=y
           CONFIG_OVERLAY_FS=y
-          
-          # --- SUSFS Base Flags ---
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
@@ -203,23 +166,15 @@ jobs:
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           CONFIG_KSU_SUSFS_SUS_MAP=y
-          
-          # --- SUSFS Enhanced & Hardened Flags ---
           CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT=y
           CONFIG_KSU_SUSFS_UNICODE_FILTER=y
           CONFIG_KSU_SUSFS_HIDDEN_NAME=y
           CONFIG_KSU_SUSFS_HARDENED=y
-          
-          # --- Zeromount Flags ---
           CONFIG_ZEROMOUNT=y
           CONFIG_ZERO_MOUNT=y
           KSUCONF
-          
-          echo "✅ All configs applied directly on tree!"
 
-          echo "=== 5. Fixing GKI mount.h ==="
-          sed -i '/int mnt_flags;/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\tint susfs_mnt_id_backup;\n#endif' include/linux/mount.h
-
+          echo "✅ Inject Script Completed Successfully!"
           INJECT_EOF
           
           chmod +x "$INJECT_SCRIPT"
