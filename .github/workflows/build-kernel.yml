@@ -82,45 +82,73 @@ jobs:
           echo "=== 2. Setting up ReSukiSU ==="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
 
-          echo "=== 3. Fixing Patch Formats on the Fly ==="
+          echo "=== 3. Healing Patch Mathematical Errors ==="
           PATCH_DIR="$GITHUB_WORKSPACE/.github/workflows/patches"
           [ ! -d "$PATCH_DIR" ] && PATCH_DIR="$GITHUB_WORKSPACE/patches"
           
-          # Fix 02_60 headers automatically so zeromount.h extracts properly
-          sed -i 's/@@ -361,11 +364,25 @@/@@ -361,9 +364,22 @@/g' "$PATCH_DIR"/*60*.patch 2>/dev/null || true
-          sed -i 's/@@ -323,17 +326,20 @@/@@ -323,16 +326,23 @@/g' "$PATCH_DIR"/*60*.patch 2>/dev/null || true
-          sed -i 's/@@ -420,17 +436,20 @@/@@ -420,16 +436,23 @@/g' "$PATCH_DIR"/*60*.patch 2>/dev/null || true
-          sed -i 's/@@ -614,17 +645,20 @@/@@ -614,16 +645,23 @@/g' "$PATCH_DIR"/*60*.patch 2>/dev/null || true
+          cat << 'PYEOF' > fix_math.py
+          import os, re, sys
+          d = sys.argv[1]
+          
+          # Fix 02_60 (Zeromount) -> Prevents crash, allows zeromount.h extraction
+          f60 = [os.path.join(d, f) for f in os.listdir(d) if '60_zeromount' in f]
+          if f60:
+              c = open(f60[0], errors='ignore').read()
+              c = re.sub(r'@@ -361,\d+ \+\d+,\d+ @@', '@@ -361,9 +364,23 @@', c)
+              c = re.sub(r'@@ -323,\d+ \+\d+,\d+ @@', '@@ -323,20 +326,28 @@', c)
+              c = re.sub(r'@@ -420,\d+ \+\d+,\d+ @@', '@@ -420,20 +436,28 @@', c)
+              c = re.sub(r'@@ -614,\d+ \+\d+,\d+ @@', '@@ -614,20 +645,28 @@', c)
+              open(f60[0], 'w').write(c)
 
-          echo "=== 4. Applying Patches Safely ==="
+          # Fix 02_51 (Enhanced SUSFS) -> Removes empty hunks causing Line 188 crash
+          f51 = [os.path.join(d, f) for f in os.listdir(d) if '51_enhanced_susfs' in f]
+          if f51:
+              c = open(f51[0], errors='ignore').read()
+              c = re.sub(r'@@ -4274,\d+ \+\d+,\d+ @@\n(?: [^\n]*\n)*', '', c)
+              c = re.sub(r'@@ -4665,\d+ \+\d+,\d+ @@\n(?: [^\n]*\n)*', '', c)
+              c = re.sub(r'@@ -3963,\d+ \+\d+,\d+ @@', '@@ -3963,11 +3981,18 @@', c)
+              c = re.sub(r'@@ -4168,\d+ \+\d+,\d+ @@', '@@ -4168,10 +4188,18 @@', c)
+              c = c.replace('\nretry:\n', '\n retry:\n')
+              c = c.replace('\norig_flow:\n#endif', '\n#endif')
+              open(f51[0], 'w').write(c)
+              
+          # Fix 02_70 (KSU Safety)
+          f70 = [os.path.join(d, f) for f in os.listdir(d) if '70_ksu_safety' in f]
+          if f70:
+              c = open(f70[0], errors='ignore').read()
+              c = re.sub(r'@@ -7,\d+ \+\d+,\d+ @@', '@@ -7,4 +7,5 @@', c)
+              open(f70[0], 'w').write(c)
+          PYEOF
+          python3 fix_math.py "$PATCH_DIR"
+
+          echo "=== 4. Applying Healed Patches ==="
           for patch_file in "$PATCH_DIR"/*.patch; do
               if [ -f "$patch_file" ]; then
                   echo "Applying $(basename "$patch_file")..."
                   sed -i 's/\r$//' "$patch_file"
-                  # Force apply ignoring space mismatch and malformed lines
-                  patch -p1 --forward --no-backup-if-mismatch --ignore-whitespace < "$patch_file" || echo "Some hunks failed, auto-fixing manually..."
+                  patch -p1 --forward --no-backup-if-mismatch < "$patch_file" || echo "Some hunks failed, auto-fixing manually..."
               fi
           done
 
-          echo "=== 5. MANUAL KERNEL INJECTIONS (Bypassing Rejects) ==="
-          # A. Force add to Makefile
+          echo "=== 5. MANUAL KERNEL INJECTIONS ==="
+          # Makefile
           grep -q "susfs.o" fs/Makefile || sed -i '$a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
           grep -q "zeromount.o" fs/Makefile || sed -i '$a obj-$(CONFIG_ZEROMOUNT) += zeromount.o' fs/Makefile
 
-          # B. Fix mount.h for Android GKI (Solves 13 namespace.c errors)
+          # Mount.h for GKI 5.10
           if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
               sed -i '/int mnt_flags;/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\tint susfs_mnt_id_backup;\n#endif' include/linux/mount.h
           fi
 
-          # C. Fix fdinfo.c unused label (Solves Werror compile crash)
+          # Unused label
           sed -i '/orig_flow:/d' fs/notify/fdinfo.c 2>/dev/null || true
 
-          # D. Fix susfs_def.h missing function
+          # Susfs App Umount Declaration
           if ! grep -q "susfs_is_current_proc_umounted_app" include/linux/susfs_def.h; then
               echo -e "\nstatic inline bool susfs_is_current_proc_umounted_app(void) {\n\treturn test_ti_thread_flag(&current->thread_info, 33);\n}" >> include/linux/susfs_def.h
           fi
 
-          # E. Fix ZeroMount headers if patch tool missed them
+          # Force Inject Zeromount Headers into task_mmu and readdir
           if ! grep -q "zeromount.h" fs/proc/task_mmu.c; then
               sed -i '/#include <linux\/pkeys.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/task_mmu.c 2>/dev/null || true
           fi
