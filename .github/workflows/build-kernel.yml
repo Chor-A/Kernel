@@ -82,78 +82,89 @@ jobs:
           echo "=== 2. Setting up ReSukiSU ==="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
 
-          echo "=== 3. Applying Patches ==="
-          for patch_file in "$GITHUB_WORKSPACE/.github/workflows/patches"/*.patch "$GITHUB_WORKSPACE/patches"/*.patch; do
+          echo "=== 3. Fixing Patch Formats on the Fly ==="
+          PATCH_DIR="$GITHUB_WORKSPACE/.github/workflows/patches"
+          [ ! -d "$PATCH_DIR" ] && PATCH_DIR="$GITHUB_WORKSPACE/patches"
+          
+          # Fix 02_60 headers automatically so zeromount.h extracts properly
+          sed -i 's/@@ -361,11 +364,25 @@/@@ -361,9 +364,22 @@/g' "$PATCH_DIR"/*60*.patch 2>/dev/null || true
+          sed -i 's/@@ -323,17 +326,20 @@/@@ -323,16 +326,23 @@/g' "$PATCH_DIR"/*60*.patch 2>/dev/null || true
+          sed -i 's/@@ -420,17 +436,20 @@/@@ -420,16 +436,23 @@/g' "$PATCH_DIR"/*60*.patch 2>/dev/null || true
+          sed -i 's/@@ -614,17 +645,20 @@/@@ -614,16 +645,23 @@/g' "$PATCH_DIR"/*60*.patch 2>/dev/null || true
+
+          echo "=== 4. Applying Patches Safely ==="
+          for patch_file in "$PATCH_DIR"/*.patch; do
               if [ -f "$patch_file" ]; then
                   echo "Applying $(basename "$patch_file")..."
                   sed -i 's/\r$//' "$patch_file"
-                  # Errors ko terminal me print hone se rok diya hai
-                  patch -p1 --forward --no-backup-if-mismatch < "$patch_file" > /dev/null 2>&1 || true
+                  # Force apply ignoring space mismatch and malformed lines
+                  patch -p1 --forward --no-backup-if-mismatch --ignore-whitespace < "$patch_file" || echo "Some hunks failed, auto-fixing manually..."
               fi
           done
 
-          echo "=== 4. Fixing Missing Headers & Code (Manual Injection) ==="
-          # Makefile
+          echo "=== 5. MANUAL KERNEL INJECTIONS (Bypassing Rejects) ==="
+          # A. Force add to Makefile
           grep -q "susfs.o" fs/Makefile || sed -i '$a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
           grep -q "zeromount.o" fs/Makefile || sed -i '$a obj-$(CONFIG_ZEROMOUNT) += zeromount.o' fs/Makefile
 
-          # Mount Header
+          # B. Fix mount.h for Android GKI (Solves 13 namespace.c errors)
           if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
               sed -i '/int mnt_flags;/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\tint susfs_mnt_id_backup;\n#endif' include/linux/mount.h
           fi
 
-          # Unused label error
+          # C. Fix fdinfo.c unused label (Solves Werror compile crash)
           sed -i '/orig_flow:/d' fs/notify/fdinfo.c 2>/dev/null || true
 
-          # Susfs Definition
+          # D. Fix susfs_def.h missing function
           if ! grep -q "susfs_is_current_proc_umounted_app" include/linux/susfs_def.h; then
               echo -e "\nstatic inline bool susfs_is_current_proc_umounted_app(void) {\n\treturn test_ti_thread_flag(&current->thread_info, 33);\n}" >> include/linux/susfs_def.h
           fi
 
-          # ZeroMount Task Header
+          # E. Fix ZeroMount headers if patch tool missed them
           if ! grep -q "zeromount.h" fs/proc/task_mmu.c; then
               sed -i '/#include <linux\/pkeys.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/proc/task_mmu.c 2>/dev/null || true
           fi
-          
-          echo "✅ All code injected perfectly!"
+          if ! grep -q "zeromount.h" fs/readdir.c; then
+              sed -i '/#include <linux\/uaccess.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/readdir.c 2>/dev/null || true
+          fi
 
-          echo "=== 5. Injecting Kconfig Flags ==="
+          echo "=== 6. Injecting Kconfig Flags ==="
           cat << 'KSUKCONF' >> fs/Kconfig
           config KSU_SUSFS
-              bool "KSU SUSFS"
+          	bool "KSU SUSFS"
           config KSU_SUSFS_SUS_PATH
-              bool
+          	bool
           config KSU_SUSFS_SUS_MOUNT
-              bool
+          	bool
           config KSU_SUSFS_SUS_KSTAT
-              bool
+          	bool
           config KSU_SUSFS_SPOOF_UNAME
-              bool
+          	bool
           config KSU_SUSFS_ENABLE_LOG
-              bool
+          	bool
           config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-              bool
+          	bool
           config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-              bool
+          	bool
           config KSU_SUSFS_OPEN_REDIRECT
-              bool
+          	bool
           config KSU_SUSFS_SUS_MAP
-              bool
+          	bool
           config KSU_SUSFS_SUS_KSTAT_REDIRECT
-              bool
+          	bool
           config KSU_SUSFS_UNICODE_FILTER
-              bool
+          	bool
           config KSU_SUSFS_HIDDEN_NAME
-              bool
+          	bool
           config KSU_SUSFS_HARDENED
-              bool
+          	bool
           config ZEROMOUNT
-              bool "Zeromount"
+          	bool "Zeromount"
           config ZERO_MOUNT
-              bool
+          	bool
           KSUKCONF
 
-          echo "=== 6. Enabling Flags in Defconfig ==="
+          echo "=== 7. Enabling Flags in Defconfig ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
           cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
           CONFIG_KSU=y
