@@ -82,55 +82,48 @@ jobs:
           echo "=== 2. Setting up ReSukiSU ==="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash - || true
 
-          echo "=== 3. Healing Patch Mathematical Errors ==="
+          echo "=== 3. Ultimate Patch Extractor (Bypassing Git) ==="
           PATCH_DIR="$GITHUB_WORKSPACE/.github/workflows/patches"
           [ ! -d "$PATCH_DIR" ] && PATCH_DIR="$GITHUB_WORKSPACE/patches"
           
-          cat << 'PYEOF' > fix_math.py
-          import os, re, sys
-          d = sys.argv[1]
-          
-          # Fix 02_60 (Zeromount) -> Prevents crash, allows zeromount.h extraction
-          f60 = [os.path.join(d, f) for f in os.listdir(d) if '60_zeromount' in f]
-          if f60:
-              c = open(f60[0], errors='ignore').read()
-              c = re.sub(r'@@ -361,\d+ \+\d+,\d+ @@', '@@ -361,9 +364,23 @@', c)
-              c = re.sub(r'@@ -323,\d+ \+\d+,\d+ @@', '@@ -323,20 +326,28 @@', c)
-              c = re.sub(r'@@ -420,\d+ \+\d+,\d+ @@', '@@ -420,20 +436,28 @@', c)
-              c = re.sub(r'@@ -614,\d+ \+\d+,\d+ @@', '@@ -614,20 +645,28 @@', c)
-              open(f60[0], 'w').write(c)
-
-          # Fix 02_51 (Enhanced SUSFS) -> Removes empty hunks causing Line 188 crash
-          f51 = [os.path.join(d, f) for f in os.listdir(d) if '51_enhanced_susfs' in f]
-          if f51:
-              c = open(f51[0], errors='ignore').read()
-              c = re.sub(r'@@ -4274,\d+ \+\d+,\d+ @@\n(?: [^\n]*\n)*', '', c)
-              c = re.sub(r'@@ -4665,\d+ \+\d+,\d+ @@\n(?: [^\n]*\n)*', '', c)
-              c = re.sub(r'@@ -3963,\d+ \+\d+,\d+ @@', '@@ -3963,11 +3981,18 @@', c)
-              c = re.sub(r'@@ -4168,\d+ \+\d+,\d+ @@', '@@ -4168,10 +4188,18 @@', c)
-              c = c.replace('\nretry:\n', '\n retry:\n')
-              c = c.replace('\norig_flow:\n#endif', '\n#endif')
-              open(f51[0], 'w').write(c)
+          cat << 'PYEOF' > patch_extractor.py
+          import os, re
+          patch_dir = os.environ.get("PATCH_DIR")
+          for pfile in sorted(os.listdir(patch_dir)):
+              if not pfile.endswith('.patch'): continue
+              print(f"\nProcessing File: {pfile}")
+              content = open(os.path.join(patch_dir, pfile), errors='ignore').read()
               
-          # Fix 02_70 (KSU Safety)
-          f70 = [os.path.join(d, f) for f in os.listdir(d) if '70_ksu_safety' in f]
-          if f70:
-              c = open(f70[0], errors='ignore').read()
-              c = re.sub(r'@@ -7,\d+ \+\d+,\d+ @@', '@@ -7,4 +7,5 @@', c)
-              open(f70[0], 'w').write(c)
+              # Har file ke diff ko alag-alag tukdo me todo
+              chunks = re.split(r'\n?(?=diff --git a/)', content)
+              for chunk in chunks:
+                  if not chunk.strip(): continue
+                  
+                  # Agar ye tukda koi nayi file bana raha hai (jaise zeromount.h)
+                  match = re.search(r'diff --git a/[^\n]+ b/([^\n]+)\n.*?--- /dev/null\n\+\+\+ b/[^\n]+\n@@ -0,0 \+1,\d+ @@\n(.*)', chunk, re.DOTALL)
+                  if match:
+                      filepath = match.group(1)
+                      filedata = match.group(2)
+                      lines = []
+                      for line in filedata.split('\n'):
+                          if line.startswith('+'): lines.append(line[1:])
+                          elif line.startswith('\\ No newline'): pass
+                          else: lines.append(line)
+                      
+                      os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                      with open(filepath, 'w') as f:
+                          f.write('\n'.join(lines))
+                      print(f"✅ Extracted new file perfectly: {filepath}")
+                  else:
+                      # Agar existing file ko modify kar raha hai toh patch tool chalne do
+                      with open("temp.patch", "w") as f:
+                          f.write(chunk + "\n")
+                      os.system("patch -p1 --forward --no-backup-if-mismatch -r - < temp.patch > /dev/null 2>&1")
           PYEOF
-          python3 fix_math.py "$PATCH_DIR"
+          export PATCH_DIR="$PATCH_DIR"
+          python3 patch_extractor.py
 
-          echo "=== 4. Applying Healed Patches ==="
-          for patch_file in "$PATCH_DIR"/*.patch; do
-              if [ -f "$patch_file" ]; then
-                  echo "Applying $(basename "$patch_file")..."
-                  sed -i 's/\r$//' "$patch_file"
-                  patch -p1 --forward --no-backup-if-mismatch < "$patch_file" || echo "Some hunks failed, auto-fixing manually..."
-              fi
-          done
-
-          echo "=== 5. MANUAL KERNEL INJECTIONS ==="
+          echo "=== 4. MANUAL KERNEL INJECTIONS ==="
           # Makefile
           grep -q "susfs.o" fs/Makefile || sed -i '$a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
           grep -q "zeromount.o" fs/Makefile || sed -i '$a obj-$(CONFIG_ZEROMOUNT) += zeromount.o' fs/Makefile
@@ -156,7 +149,7 @@ jobs:
               sed -i '/#include <linux\/uaccess.h>/a #ifdef CONFIG_ZEROMOUNT\n#include <linux/zeromount.h>\n#endif' fs/readdir.c 2>/dev/null || true
           fi
 
-          echo "=== 6. Injecting Kconfig Flags ==="
+          echo "=== 5. Injecting Kconfig Flags ==="
           cat << 'KSUKCONF' >> fs/Kconfig
           config KSU_SUSFS
           	bool "KSU SUSFS"
@@ -192,7 +185,7 @@ jobs:
           	bool
           KSUKCONF
 
-          echo "=== 7. Enabling Flags in Defconfig ==="
+          echo "=== 6. Enabling Flags in Defconfig ==="
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
           cat << 'KSUCONF' >> arch/arm64/configs/gki_defconfig
           CONFIG_KSU=y
