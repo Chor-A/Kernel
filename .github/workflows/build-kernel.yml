@@ -122,29 +122,6 @@ jobs:
             git checkout ${{ env.KERNEL_COMMIT }}
           fi
 
-      - name: Apply KernelSU and SuSFS
-        run: |
-          cd work/common
-          echo "=== 1. Integrating SUSFS into Kernel ==="
-          git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
-          cp -r ../susfs4ksu/kernel_patches/fs/* fs/
-          cp -r ../susfs4ksu/kernel_patches/include/linux/* include/linux/
-          patch -p1 < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || echo "Warning: SUSFS patch issue"
-          
-          # 1. Fix "current_uid() base type" compiler crash by injecting cred.h globally into SuSFS definitions
-          sed -i '1i #include <linux/cred.h>' include/linux/susfs_def.h
-          
-          # 2. Fix missing susfs.h in statfs.c safely (placed BELOW existing includes)
-          sed -i '/#include <linux\/susfs_def.h>/a #include <linux\/susfs.h>' fs/statfs.c
-          
-          # 3. FIX FOR PATCH BUG: Force the extern declaration above where it gets called
-          sed -i '/#include "internal.h"/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n#endif' fs/statfs.c
-          echo "✅ Fixed SuSFS compilation headers and patch structural bugs!"
-          
-          # Safety fallback for symbol compatibility (Linker Backup Plan)
-          echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
-          echo "int __attribute__((weak)) susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse) { return 0; }" >> fs/susfs.c
-
       - name: Apply SUSFS, Custom Patches & Direct Code Spoofing
         run: |
           cd work/common
@@ -162,10 +139,14 @@ jobs:
           # Fix missing SuSFS header and cred.h in statfs.c to prevent implicit declaration error
           sed -i '1i #include <linux/cred.h>' fs/statfs.c
           sed -i '2i #include <linux/susfs.h>' fs/statfs.c
-          echo "✅ Fixed SuSFS and Cred headers in fs/statfs.c"
+          
+          # FIX FOR PATCH BUG: Force the extern declaration above where it gets called
+          sed -i '/#include "internal.h"/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n#endif' fs/statfs.c
+          echo "✅ Fixed SuSFS compilation headers and patch structural bugs!"
 
           # Safety fallback for symbol compatibility
           echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
+          echo "int __attribute__((weak)) susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse) { return 0; }" >> fs/susfs.c
 
           echo "=== 2. Applying Custom Patches (mglru, services, etc.) ==="
           for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
