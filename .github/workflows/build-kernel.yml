@@ -216,6 +216,10 @@ jobs:
           KSUCONF
           
           echo "✅ All configs applied directly on tree!"
+
+          echo "=== 5. Fixing GKI mount.h ==="
+          sed -i '/int mnt_flags;/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\tint susfs_mnt_id_backup;\n#endif' include/linux/mount.h
+
           INJECT_EOF
           
           chmod +x "$INJECT_SCRIPT"
