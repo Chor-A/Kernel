@@ -144,7 +144,7 @@ jobs:
           sed -i '/#include "internal.h"/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n#endif' fs/statfs.c
           echo "✅ Fixed SuSFS compilation headers and patch structural bugs!"
 
-          # Safety fallback for symbol compatibility
+          # Safety fallback for symbol compatibility (WARNING: Do NOT add spoof_vfs_statfs here to prevent redefinition)
           echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
 
           echo "=== 2. Applying Custom Patches (mglru, services, etc.) ==="
@@ -356,7 +356,7 @@ jobs:
                   f.write(array_content)
               print("Successfully spoofed fs/proc/array.c")
 
-          # 4. Modify security/selinux/ss/services.c
+          # 4. Modify security/selinux/ss/services.c (BATTERY OPTIMIZED REWRITE)
           services_path = "security/selinux/ss/services.c"
           if os.path.exists(services_path):
               with open(services_path, "r") as f:
@@ -365,11 +365,12 @@ jobs:
               engine_marker = '#include "policycap_names.h"'
               engine_code = (
                   '#include "policycap_names.h"\n\n'
-                  '/* --- INJECTED KERNEL RULES: RCU SPOOFING ENGINE START --- */\n'
+                  '/* --- INJECTED: OPTIMIZED RCU SPOOFING ENGINE --- */\n'
                   '#include <linux/uidgid.h>\n'
                   '#include <linux/cred.h>\n'
                   '#include <linux/compiler.h>\n'
-                  '#include <linux/mutex.h>\n\n'
+                  '#include <linux/mutex.h>\n'
+                  '#include <linux/rcupdate.h>\n\n'
                   'struct selinux_spoof_ids {\n'
                   '\tu16 cap_c, process_c, binder_c;\n'
                   '\tu32 fsck_t, shell_t, su_t, adbd_t, adbroot_t;\n'
@@ -408,20 +409,26 @@ jobs:
                   '\tif (old_ids)\n'
                   '\t\tkfree_rcu(old_ids, rcu);\n'
                   '}\n'
-                  '/* --- INJECTED KERNEL RULES: RCU SPOOFING ENGINE END --- */'
+                  '/* ----------------------------------------------- */'
               )
 
               if engine_marker in serv_content:
                   serv_content = serv_content.replace(engine_marker, engine_code, 1)
 
+              # HIGH-SPEED REWRITE: Int-Check before Context-Check before UID-Check.
               av_hook = (
                   '\tcontext_struct_compute_av(policydb, scontext, tcontext, tclass, avd,\n'
                   '\t\t\t\t  NULL);\n\n'
-                  '\t/* --- INJECTED KERNEL RULES: AVC BYPASS START --- */\n'
+                  '\t/* --- OPTIMIZED AVC BYPASS --- */\n'
                   '\tif (unlikely(avd->allowed) && scontext && tcontext) {\n'
-                  '\t\tif (unlikely(__kuid_val(current_uid()) >= 10000)) {\n'
-                  '\t\t\tstruct selinux_spoof_ids *s_ids = rcu_dereference(global_spoof);\n'
-                  '\t\t\t\tif (s_ids) {\n'
+                  '\t\tstruct selinux_spoof_ids *s_ids;\n'
+                  '\t\trcu_read_lock(); /* Stop battery-draining LockDep logs! */\n'
+                  '\t\ts_ids = rcu_dereference(global_spoof);\n'
+                  '\t\tif (likely(s_ids)) {\n'
+                  '\t\t\t/* STEP 1: Eliminate 99.9% of routine operations via raw integers */\n'
+                  '\t\t\tif (unlikely(tclass == s_ids->cap_c || tclass == s_ids->process_c || tclass == s_ids->binder_c)) {\n'
+                  '\t\t\t\t/* STEP 2: Only access heavy current_uid() if classes actually match */\n'
+                  '\t\t\t\tif (unlikely(__kuid_val(current_uid()) >= 10000)) {\n'
                   '\t\t\t\t\tbool spoof = false;\n'
                   '\t\t\t\t\tif (s_ids->fsck_t && tclass == s_ids->cap_c && scontext->type == s_ids->fsck_t && tcontext->type == s_ids->fsck_t)\n'
                   '\t\t\t\t\t\tspoof = true;\n'
@@ -437,19 +444,21 @@ jobs:
                   '\t\t\t\t}\n'
                   '\t\t\t}\n'
                   '\t\t}\n'
-                  '\t/* --- INJECTED KERNEL RULES: AVC BYPASS END --- */'
+                  '\t\trcu_read_unlock();\n'
+                  '\t}\n'
+                  '\t/* ----------------------------- */'
               )
 
               target_av_call = r'context_struct_compute_av\(policydb,\s*scontext,\s*tcontext,\s*tclass,\s*avd,\s*NULL\);'
               serv_content = re.sub(target_av_call, av_hook, serv_content, count=1)
 
               commit_marker = 'security_load_policycaps(state, newpolicy);'
-              commit_code = 'security_load_policycaps(state, newpolicy);\n\n\t/* --- INJECTED: Refresh Spoof IDs safely during policy reload --- */\n\tupdate_spoof_ids(newpolicy);'
+              commit_code = 'security_load_policycaps(state, newpolicy);\n\n\t/* --- INJECTED: Refresh Spoof IDs safely --- */\n\tupdate_spoof_ids(newpolicy);'
               serv_content = serv_content.replace(commit_marker, commit_code, 1)
 
               with open(services_path, "w") as f:
                   f.write(serv_content)
-              print("Successfully spoofed security/selinux/ss/services.c")
+              print("Successfully spoofed security/selinux/ss/services.c (Battery Optimized Mode)")
           EOF
           echo "✅ Python regex injection with UID-checks completed successfully!"
 
