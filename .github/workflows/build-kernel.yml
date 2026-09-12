@@ -132,9 +132,14 @@ jobs:
           cp -r ../susfs4ksu/kernel_patches/include/linux/* include/linux/
           patch -p1 < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || echo "Warning: SUSFS patch issue"
           
-          # Fix missing SuSFS header in statfs.c to prevent implicit declaration error
-          sed -i '1i #include <linux/susfs.h>' fs/statfs.c
-          echo "✅ Fixed SuSFS header in fs/statfs.c"
+          # Fix missing cred.h in SuSFS definitions for current_uid()
+          sed -i '1i #include <linux/cred.h>' include/linux/susfs_def.h
+          echo "✅ Fixed current_uid() missing header in susfs_def.h"
+
+          # Fix missing SuSFS header and cred.h in statfs.c to prevent implicit declaration error
+          sed -i '1i #include <linux/cred.h>' fs/statfs.c
+          sed -i '2i #include <linux/susfs.h>' fs/statfs.c
+          echo "✅ Fixed SuSFS and Cred headers in fs/statfs.c"
 
           # Safety fallback for symbol compatibility
           echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
