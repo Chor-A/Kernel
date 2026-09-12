@@ -524,26 +524,9 @@ jobs:
           chmod +x scripts/setlocalversion
           echo "✅ LOCALVERSION spoofing applied!"
 
-      - name: Architecturally-Safe API Healing (Timer Backports) & Standard audit_fsnotify
+      - name: Ensuring clean standard audit_fsnotify.c
         run: |
           cd work/common
-          
-          echo "=== 1. Safely Aliasing Timer API via Pre-Processor for 6.x Backports ==="
-          # Inject backward compatibility wrappers seamlessly instead of destructive 'sed' file overrides
-          # By hooking at the fundamental timer.h header, drivers gracefully compile the original v5.10 timer functions 
-          # completely avoiding Idle kernel panics & missing lock behavior when suspending hardware.
-          sed -i '/#include <linux\/list.h>/a \
-          /* --- Safely aliased 6.x modern timer functions backward mapping --- */\n\
-          #ifndef timer_delete_sync\n\
-          #define timer_delete_sync(timer) del_timer_sync(timer)\n\
-          #endif\n\
-          #ifndef timer_delete\n\
-          #define timer_delete(timer) del_timer(timer)\n\
-          #endif\n\
-          /* ---------------------------------------------------------------- */' include/linux/timer.h
-          echo "✅ Preprocessor mapping successful for backported networking and MGLRU drivers."
-
-          echo "=== 2. Ensuring clean standard audit_fsnotify.c ==="
           cat << 'EOF' > kernel/audit_fsnotify.c
           // SPDX-License-Identifier: GPL-2.0-or-later
           /* audit_fsnotify.c -- tracking inodes
@@ -740,7 +723,6 @@ jobs:
           }
           device_initcall(audit_fsnotify_init);
           EOF
-          echo "✅ All upstream API bugs automatically healed!"
 
       - name: Build kernel
         run: |
