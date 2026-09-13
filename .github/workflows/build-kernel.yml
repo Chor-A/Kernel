@@ -141,7 +141,7 @@ jobs:
           echo "=== 2. Integrating Official NoMount via Method 3 (dev branch) ==="
           git clone --depth=1 -b dev https://github.com/maxsteeel/nomount.git ../nomount
 
-          # 1. Add to fs/Kconfig
+          # 1. Add to fs/Kconfig (File ke aakhir me ek hi baar add hoga)
           sed -i '$i source "fs/nomount/Kconfig"' fs/Kconfig
 
           # 2. Add to fs/Makefile
