@@ -126,7 +126,7 @@ jobs:
         run: |
           cd work/common
 
-          echo "=== 1. Completely Purging All Old NoMount (v1.1.1 hooks & v2.0.0 tree) ==="
+          echo "=== 1. Completely Purging All Old NoMount ==="
           rm -rf fs/nomount fs/nomount.c fs/nomount.h
           sed -i '/nomount/d' fs/Kconfig
           sed -i '/nomount/d' fs/Makefile
@@ -141,9 +141,13 @@ jobs:
           echo "=== 2. Integrating Official NoMount via Method 3 (dev branch) ==="
           git clone --depth=1 -b dev https://github.com/maxsteeel/nomount.git ../nomount
 
-          sed -i '/endmenu/i source "fs/nomount/Kconfig"' fs/Kconfig
+          # 1. Add to fs/Kconfig
+          sed -i '$i source "fs/nomount/Kconfig"' fs/Kconfig
+
+          # 2. Add to fs/Makefile
           echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
 
+          # 3. Copy the necessary files
           mkdir -p fs/nomount
           if [ -d "../nomount/kernel/src" ]; then
             cp -rf ../nomount/kernel/src/* fs/nomount/
@@ -151,6 +155,7 @@ jobs:
             cp -rf ../nomount/src/* fs/nomount/
           fi
 
+          # 4. Enable NoMount in defconfig
           echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "✅ Old NoMount wiped and Official Method 3 (dev branch) applied!"
 
@@ -537,7 +542,7 @@ jobs:
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
 
-          # --- Core KPM & KALLSYMS Flags Injected Safely ---
+          # --- Core KPM & KALLSYMS Flags ---
           echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/gki_defconfig
