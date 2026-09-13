@@ -537,6 +537,11 @@ jobs:
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
 
+          # --- Core KPM & KALLSYMS Flags Injected Safely ---
+          echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/gki_defconfig
+
           # SuSFS Integration Flags
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/arm64/configs/gki_defconfig
