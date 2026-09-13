@@ -122,6 +122,47 @@ jobs:
             git checkout ${{ env.KERNEL_COMMIT }}
           fi
 
+      - name: Clean Hardcoded NoMount & Integrate Official NoMount (Method 3 - Dev Branch)
+        run: |
+          cd work/common
+
+          echo "=== 1. Completely Purging All Old NoMount (v1.1.1 hooks & v2.0.0 tree) ==="
+          # Delete directories and standalone files
+          rm -rf fs/nomount fs/nomount.c fs/nomount.h
+
+          # Clean Kconfig & Makefile
+          sed -i '/nomount/d' fs/Kconfig
+          sed -i '/nomount/d' fs/Makefile
+
+          # Clean all 6 core files from commit 1ce2f86 (in case of leftover hooks)
+          sed -i '/nomount/d' fs/d_path.c 2>/dev/null || true
+          sed -i '/nomount/d' fs/namei.c 2>/dev/null || true
+          sed -i '/nomount/d' fs/stat.c 2>/dev/null || true
+          sed -i '/nomount/d' fs/statfs.c 2>/dev/null || true
+          sed -i '/nomount/d' fs/readdir.c 2>/dev/null || true
+          sed -i '/nomount/d' fs/proc/task_mmu.c 2>/dev/null || true
+
+          echo "=== 2. Integrating Official NoMount via Method 3 (dev branch) ==="
+          git clone --depth=1 -b dev https://github.com/maxsteeel/nomount.git ../nomount
+
+          # 1. Add to fs/Kconfig
+          sed -i '/endmenu/i source "fs/nomount/Kconfig"' fs/Kconfig
+
+          # 2. Add to fs/Makefile
+          echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
+
+          # 3. Copy the necessary files
+          mkdir -p fs/nomount
+          if [ -d "../nomount/kernel/src" ]; then
+            cp -rf ../nomount/kernel/src/* fs/nomount/
+          elif [ -d "../nomount/src" ]; then
+            cp -rf ../nomount/src/* fs/nomount/
+          fi
+
+          # 4. Enable NoMount in defconfig
+          echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "✅ Old NoMount completely wiped and Official Method 3 (dev branch) applied!"
+
       - name: Apply SUSFS, Custom Patches & Direct Code Spoofing
         run: |
           cd work/common
@@ -730,7 +771,6 @@ jobs:
           	return 0;
           }
           device_initcall(audit_fsnotify_init);
-          EOF
 
       - name: Build kernel
         run: |
