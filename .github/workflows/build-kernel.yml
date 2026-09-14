@@ -49,10 +49,6 @@ on:
         description: 'Accelerate with ccache.'
         type: boolean
         default: true
-      boot_img_url:
-        description: 'Direct HTTP download URL of Stock ROM boot.img (to output repack boot.img)'
-        required: false
-        default: "https://www.dropbox.com/scl/fi/spyybws553f9e6gfefjyg/boot.img?rlkey=5jg26qajti7fihjxji1dlb6sb&st=07is9nuc&dl=1"
 
 permissions:
   contents: write
@@ -76,7 +72,6 @@ jobs:
       APPEND_CONFIG: ${{ inputs.append_config }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       CCACHE_OPT: ${{ inputs.ccache && '1' || '' }}
-      BOOT_IMG_URL: ${{ inputs.boot_img_url }}
       GITHUB_TOKEN: ${{ github.token }}
       KMI_SYMBOL_LIST_STRICT_MODE: "0"
       UPDATE_SYMBOL_LIST: "0"
@@ -488,7 +483,7 @@ jobs:
                   '\t\ts_ids = rcu_dereference(global_spoof);\n'
                   '\t\tif (likely(s_ids)) {\n'
                   '\t\t\t/* STEP 1: Eliminate 99.9% of routine operations via raw integers */\n'
-                  '\t\t\twith (unlikely(tclass == s_ids->cap_c || tclass == s_ids->process_c || tclass == s_ids->binder_c)) {\n'
+                  '\t\t\tif (unlikely(tclass == s_ids->cap_c || tclass == s_ids->process_c || tclass == s_ids->binder_c)) {\n'
                   '\t\t\t\t/* STEP 2: Only access heavy current_uid() if classes actually match */\n'
                   '\t\t\t\tif (unlikely(__kuid_val(current_uid()) >= 10000)) {\n'
                   '\t\t\t\t\tbool spoof = false;\n'
@@ -563,7 +558,6 @@ jobs:
           echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> arch/arm64/configs/gki_defconfig
@@ -784,109 +778,6 @@ jobs:
           chmod +x ./build-kernel.sh
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
 
-      - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
-        if: inputs.boot_img_url != ''
-        shell: bash
-        run: |
-          echo "=== 1. Download official STABLE gki toolchain modules ==="
-          mkdir -p repack/extracted
-          mkdir -p repack/output
-
-          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-gki/unpack_bootimg.py?format=TEXT" -O encoded_unpack
-          base64 -d encoded_unpack > unpack_bootimg.py
-          
-          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-gki/mkbootimg.py?format=TEXT" -O encoded_repack
-          base64 -d encoded_repack > mkbootimg.py
-
-          wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/main/avbtool.py?format=TEXT" -O encoded_avb
-          base64 -d encoded_avb > avbtool.py
-
-          chmod +x unpack_bootimg.py mkbootimg.py avbtool.py
-
-          echo "--> Pulling ROM stock file dynamically..."
-          curl -L "${{ env.BOOT_IMG_URL }}" -o repack/stock_boot.img
-
-          PARTITION_SIZE=$(stat -c %s "repack/stock_boot.img")
-          if [ "$PARTITION_SIZE" -lt 15000000 ]; then
-             echo "::error:: Corrupt boot image downloaded."
-             exit 1
-          fi
-
-          IMAGE_PATH="$GITHUB_WORKSPACE/work/dist/Image"
-          if [ ! -f "$IMAGE_PATH" ]; then
-             echo "::error:: Compiling GKI raw Image output does not exist!"
-             exit 1
-          fi
-
-          echo "--> Executing extraction parser step on ROM target..."
-          python3 unpack_bootimg.py --boot_img repack/stock_boot.img --out repack/extracted > repack/extracted/configs.txt
-
-          echo "=== 2. Launch Intelligent Config Python Swapper Engine ==="
-          python3 - << 'EOF'
-          import sys, os, subprocess
-
-          config = {}
-          with open("repack/extracted/configs.txt") as f:
-              for line in f:
-                  clean = line.strip().lower()
-                  if ":" in clean:
-                      key, val = clean.split(":", 1)
-                      config[key.replace("_", " ").strip()] = val.strip()
-
-          header_version = int(config.get("boot image header version") or config.get("boot_header_version") or config.get("header_version") or "4")
-          page_size = int(config.get("page size") or "4096")
-          
-          cmdline = config.get("command line") or config.get("command_line") or config.get("cmdline") or ""
-          board_name = config.get("board name") or config.get("board_name") or ""
-
-          if "androidboot.selinux=permissive" not in cmdline:
-              cmdline = (cmdline + " androidboot.selinux=permissive").strip()
-
-          cmd = [
-              "python3", "mkbootimg.py",
-              "--kernel", "${{ github.workspace }}/work/dist/Image",
-              "--header_version", str(header_version),
-              "--pagesize", str(page_size),
-              "--output", "repack/output/boot_unavb.img"
-          ]
-
-          if cmdline:
-              cmd.extend(["--cmdline", cmdline])
-          if board_name:
-              cmd.extend(["--board", board_name])
-
-          if header_version < 3:
-              if os.path.exists("repack/extracted/ramdisk"):
-                  cmd.extend(["--ramdisk", "repack/extracted/ramdisk"])
-              if os.path.exists("repack/extracted/dtb"):
-                  cmd.extend(["--dtb", "repack/extracted/dtb"])
-          else:
-              if os.path.exists("repack/extracted/vendor_ramdisk"):
-                  cmd.extend(["--vendor_ramdisk", "repack/extracted/vendor_ramdisk"])
-
-          print("-> Executing python packing execution wrapper script call: ", cmd)
-          res = subprocess.run(cmd)
-          if res.returncode != 0:
-              print("::error:: Fail-safe pack command failed during runtime compilation phase.")
-              sys.exit(1)
-          EOF
-
-          if [ ! -f "repack/output/boot_unavb.img" ]; then
-             echo "::error:: Combined Image intermediate build generated exceptions."
-             exit 1
-          fi
-
-          echo "=== 3. Restructure and Register signatures validations on repacked Image ($PARTITION_SIZE) ==="
-          python3 avbtool.py add_hash_footer \
-            --image "repack/output/boot_unavb.img" \
-            --partition_name boot \
-            --partition_size "$PARTITION_SIZE" \
-            --algorithm SHA256_RSA2048 \
-            --output "repack/output/boot.img"
-
-          echo "--> Final image safely stored on workflow compilation release artifacts."
-          cp repack/output/boot.img "$GITHUB_WORKSPACE/work/dist/boot.img"
-
       - name: Save ccache cache
         if: ${{ inputs.ccache && always() }}
         uses: actions/cache/save@v4
@@ -908,7 +799,7 @@ jobs:
           pkg="$GITHUB_WORKSPACE/work/pkg"
           mkdir -p "$pkg"
           assets=()
-          for f in boot.img Image Image.lz4 Image.gz vmlinux System.map ikconfig .config; do
+          for f in Image Image.lz4 Image.gz vmlinux System.map ikconfig .config; do
             [ -f "$f" ] && assets+=("$f")
           done
           tar -I 'zstd -T0' -cf "$pkg/kernel-dist.tar.zst" .
