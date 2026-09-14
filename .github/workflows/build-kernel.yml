@@ -44,7 +44,7 @@ on:
       append_config:
         description: 'Extra literal CONFIG_* lines injected into the defconfig'
         required: false
-        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_NOMOUNT=y"
+        default: "CONFIG_KPM=y,CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_NOMOUNT=y"
       ccache:
         description: 'Accelerate with ccache.'
         type: boolean
@@ -146,7 +146,7 @@ jobs:
           echo "=== 2. Integrating Official NoMount via Method 3 (dev branch) ==="
           git clone --depth=1 -b dev https://github.com/maxsteeel/nomount.git ../nomount
 
-          # 1. Add to fs/Kconfig
+          # 1. Add to fs/Kconfig (File ke aakhir me ek hi baar add hoga)
           sed -i '$i source "fs/nomount/Kconfig"' fs/Kconfig
 
           # 2. Add to fs/Makefile
@@ -484,7 +484,7 @@ jobs:
                   '\t/* --- OPTIMIZED AVC BYPASS --- */\n'
                   '\tif (unlikely(avd->allowed) && scontext && tcontext) {\n'
                   '\t\tstruct selinux_spoof_ids *s_ids;\n'
-                  '\t\trcu_read_lock(); \n'
+                  '\t\trcu_read_lock(); /* Stop battery-draining LockDep logs! */\n'
                   '\t\ts_ids = rcu_dereference(global_spoof);\n'
                   '\t\tif (likely(s_ids)) {\n'
                   '\t\t\t/* STEP 1: Eliminate 99.9% of routine operations via raw integers */\n'
@@ -547,7 +547,8 @@ jobs:
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
 
-          # --- Core KALLSYMS Flags ---
+          # --- Core KPM & KALLSYMS Flags ---
+          echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/gki_defconfig
 
@@ -791,14 +792,12 @@ jobs:
           mkdir -p repack/extracted
           mkdir -p repack/output
 
-          # Utilizing the standalone release of android12-gki (Resolves module lookup issue!)
           wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-gki/unpack_bootimg.py?format=TEXT" -O encoded_unpack
           base64 -d encoded_unpack > unpack_bootimg.py
           
           wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-gki/mkbootimg.py?format=TEXT" -O encoded_repack
           base64 -d encoded_repack > mkbootimg.py
 
-          # Tool to add avb footer to our repackaged boot
           wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/main/avbtool.py?format=TEXT" -O encoded_avb
           base64 -d encoded_avb > avbtool.py
 
@@ -807,14 +806,12 @@ jobs:
           echo "--> Pulling ROM stock file dynamically..."
           curl -L "${{ env.BOOT_IMG_URL }}" -o repack/stock_boot.img
 
-          # Validate target file exists
           PARTITION_SIZE=$(stat -c %s "repack/stock_boot.img")
           if [ "$PARTITION_SIZE" -lt 15000000 ]; then
              echo "::error:: Corrupt boot image downloaded."
              exit 1
           fi
 
-          # Uncompressed output kernel locator
           IMAGE_PATH="$GITHUB_WORKSPACE/work/dist/Image"
           if [ ! -f "$IMAGE_PATH" ]; then
              echo "::error:: Compiling GKI raw Image output does not exist!"
@@ -828,7 +825,6 @@ jobs:
           python3 - << 'EOF'
           import sys, os, subprocess
 
-          # Build mapping lookup configs
           config = {}
           with open("repack/extracted/configs.txt") as f:
               for line in f:
@@ -840,11 +836,9 @@ jobs:
           header_version = int(config.get("boot image header version") or config.get("boot_header_version") or config.get("header_version") or "4")
           page_size = int(config.get("page size") or "4096")
           
-          # Maintain original CLI args
           cmdline = config.get("command line") or config.get("command_line") or config.get("cmdline") or ""
           board_name = config.get("board name") or config.get("board_name") or ""
 
-          # Failsafe Developer debugging parameter toggler (Permissive bypass startup defense)
           if "androidboot.selinux=permissive" not in cmdline:
               cmdline = (cmdline + " androidboot.selinux=permissive").strip()
 
@@ -861,7 +855,6 @@ jobs:
           if board_name:
               cmd.extend(["--board", board_name])
 
-          # Include remaining binaries untouched on file generation arrays
           if header_version < 3:
               if os.path.exists("repack/extracted/ramdisk"):
                   cmd.extend(["--ramdisk", "repack/extracted/ramdisk"])
@@ -878,13 +871,11 @@ jobs:
               sys.exit(1)
           EOF
 
-          # Verify correct build alignment
           if [ ! -f "repack/output/boot_unavb.img" ]; then
              echo "::error:: Combined Image intermediate build generated exceptions."
              exit 1
           fi
 
-          # 5. Write Signature Hashes to maintain start-up trust mappings bounds constraints
           echo "=== 3. Restructure and Register signatures validations on repacked Image ($PARTITION_SIZE) ==="
           python3 avbtool.py add_hash_footer \
             --image "repack/output/boot_unavb.img" \
