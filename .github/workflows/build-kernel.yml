@@ -488,7 +488,7 @@ jobs:
                   '\t\ts_ids = rcu_dereference(global_spoof);\n'
                   '\t\tif (likely(s_ids)) {\n'
                   '\t\t\t/* STEP 1: Eliminate 99.9% of routine operations via raw integers */\n'
-                  '\t\t\tif (unlikely(tclass == s_ids->cap_c || tclass == s_ids->process_c || tclass == s_ids->binder_c)) {\n'
+                  '\t\t\twith (unlikely(tclass == s_ids->cap_c || tclass == s_ids->process_c || tclass == s_ids->binder_c)) {\n'
                   '\t\t\t\t/* STEP 2: Only access heavy current_uid() if classes actually match */\n'
                   '\t\t\t\tif (unlikely(__kuid_val(current_uid()) >= 10000)) {\n'
                   '\t\t\t\t\tbool spoof = false;\n'
@@ -547,7 +547,7 @@ jobs:
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
 
-          # --- Core KALLSYMS Flags (Notice KPM removed!) ---
+          # --- Core KALLSYMS Flags ---
           echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/gki_defconfig
 
@@ -787,16 +787,18 @@ jobs:
         if: inputs.boot_img_url != ''
         shell: bash
         run: |
-          echo "=== 1. Download official dependencies ==="
+          echo "=== 1. Download official STABLE gki toolchain modules ==="
           mkdir -p repack/extracted
           mkdir -p repack/output
 
-          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/unpack_bootimg.py?format=TEXT" -O encoded_unpack
+          # Utilizing the standalone release of android12-gki (Resolves module lookup issue!)
+          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-gki/unpack_bootimg.py?format=TEXT" -O encoded_unpack
           base64 -d encoded_unpack > unpack_bootimg.py
           
-          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/mkbootimg.py?format=TEXT" -O encoded_repack
+          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-gki/mkbootimg.py?format=TEXT" -O encoded_repack
           base64 -d encoded_repack > mkbootimg.py
 
+          # Tool to add avb footer to our repackaged boot
           wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/main/avbtool.py?format=TEXT" -O encoded_avb
           base64 -d encoded_avb > avbtool.py
 
@@ -805,32 +807,31 @@ jobs:
           echo "--> Pulling ROM stock file dynamically..."
           curl -L "${{ env.BOOT_IMG_URL }}" -o repack/stock_boot.img
 
-          # Safeguard sizing triggers
+          # Validate target file exists
           PARTITION_SIZE=$(stat -c %s "repack/stock_boot.img")
           if [ "$PARTITION_SIZE" -lt 15000000 ]; then
              echo "::error:: Corrupt boot image downloaded."
              exit 1
           fi
 
-          # Standard AOSP uncompressed Image output tracking
+          # Uncompressed output kernel locator
           IMAGE_PATH="$GITHUB_WORKSPACE/work/dist/Image"
           if [ ! -f "$IMAGE_PATH" ]; then
              echo "::error:: Compiling GKI raw Image output does not exist!"
              exit 1
           fi
 
-          echo "--> Executing base diagnostic extraction step..."
+          echo "--> Executing extraction parser step on ROM target..."
           python3 unpack_bootimg.py --boot_img repack/stock_boot.img --out repack/extracted > repack/extracted/configs.txt
 
           echo "=== 2. Launch Intelligent Config Python Swapper Engine ==="
           python3 - << 'EOF'
           import sys, os, subprocess
 
-          # Read stock output maps into lookup dict keys
+          # Build mapping lookup configs
           config = {}
           with open("repack/extracted/configs.txt") as f:
               for line in f:
-                  # Supports different formatting variations automatically
                   clean = line.strip().lower()
                   if ":" in clean:
                       key, val = clean.split(":", 1)
@@ -839,15 +840,14 @@ jobs:
           header_version = int(config.get("boot image header version") or config.get("boot_header_version") or config.get("header_version") or "4")
           page_size = int(config.get("page size") or "4096")
           
-          # Maintain original CLI args logic mapped by OEM/ROM creator 
+          # Maintain original CLI args
           cmdline = config.get("command line") or config.get("command_line") or config.get("cmdline") or ""
           board_name = config.get("board name") or config.get("board_name") or ""
 
-          # Failsafe permissive injection on compiled kernels (test configurations safeguard)
+          # Failsafe Developer debugging parameter toggler (Permissive bypass startup defense)
           if "androidboot.selinux=permissive" not in cmdline:
               cmdline = (cmdline + " androidboot.selinux=permissive").strip()
 
-          # Build mkbootimg array payload mapping for uncompressed ARM64 generic block swaps
           cmd = [
               "python3", "mkbootimg.py",
               "--kernel", "${{ github.workspace }}/work/dist/Image",
@@ -861,7 +861,7 @@ jobs:
           if board_name:
               cmd.extend(["--board", board_name])
 
-          # Incorporate the existing dependencies block elements without modification
+          # Include remaining binaries untouched on file generation arrays
           if header_version < 3:
               if os.path.exists("repack/extracted/ramdisk"):
                   cmd.extend(["--ramdisk", "repack/extracted/ramdisk"])
@@ -871,21 +871,21 @@ jobs:
               if os.path.exists("repack/extracted/vendor_ramdisk"):
                   cmd.extend(["--vendor_ramdisk", "repack/extracted/vendor_ramdisk"])
 
-          print("-> Packaging build parameters output array configuration via official tool chains:", cmd)
+          print("-> Executing python packing execution wrapper script call: ", cmd)
           res = subprocess.run(cmd)
           if res.returncode != 0:
-              print("::error:: Fail-safe pack command returned fault exceptions parameters configurations!")
+              print("::error:: Fail-safe pack command failed during runtime compilation phase.")
               sys.exit(1)
           EOF
 
-          # Verify intermediate payload is aligned dynamically on size checks bounds before run adds footer limits
+          # Verify correct build alignment
           if [ ! -f "repack/output/boot_unavb.img" ]; then
-             echo "::error:: Spliced Intermediate build target generated aborts checks."
+             echo "::error:: Combined Image intermediate build generated exceptions."
              exit 1
           fi
 
-          # Dynamic Verified Boot chains key structure validations matching original partition offsets bounds block bounds
-          echo "=== 3. Resolving Signature Keys matching dynamic Original Partition Bounds ($PARTITION_SIZE) ==="
+          # 5. Write Signature Hashes to maintain start-up trust mappings bounds constraints
+          echo "=== 3. Restructure and Register signatures validations on repacked Image ($PARTITION_SIZE) ==="
           python3 avbtool.py add_hash_footer \
             --image "repack/output/boot_unavb.img" \
             --partition_name boot \
@@ -893,7 +893,7 @@ jobs:
             --algorithm SHA256_RSA2048 \
             --output "repack/output/boot.img"
 
-          echo "--> Successful build, aligning output parameters inside work scope directory paths!"
+          echo "--> Final image safely stored on workflow compilation release artifacts."
           cp repack/output/boot.img "$GITHUB_WORKSPACE/work/dist/boot.img"
 
       - name: Save ccache cache
