@@ -20,7 +20,7 @@ on:
       kernel_branch:
         description: 'Kernel source branch'
         required: false
-        default: "Linux2-Staging"
+        default: "Linux1-Staging"
       kernel_commit:
         description: 'Kernel source commit'
         required: false
@@ -141,7 +141,7 @@ jobs:
           echo "=== 2. Integrating Official NoMount via Method 3 (dev branch) ==="
           git clone --depth=1 -b dev https://github.com/maxsteeel/nomount.git ../nomount
 
-          # 1. Add to fs/Kconfig (File ke aakhir me ek hi baar add hoga)
+          # 1. Add to fs/Kconfig
           sed -i '$i source "fs/nomount/Kconfig"' fs/Kconfig
 
           # 2. Add to fs/Makefile
@@ -184,7 +184,7 @@ jobs:
           # Safety fallback for symbol compatibility
           echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
 
-          echo "=== 2. Applying Custom Patches (mglru, services, etc.) ==="
+          echo "=== 2. Applying Custom Patches (services, etc.) ==="
           for dir in "$GITHUB_WORKSPACE/.github/workflows/patches" "$GITHUB_WORKSPACE/patches"; do
             if [ -d "$dir" ]; then
               for patch_file in "$dir"/*.patch; do
@@ -542,8 +542,7 @@ jobs:
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
 
-          # --- Core KPM & KALLSYMS Flags ---
-          echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
+          # --- Core KALLSYMS Flags ---
           echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/gki_defconfig
 
@@ -916,7 +915,6 @@ jobs:
           pkg="$GITHUB_WORKSPACE/work/pkg"
           mkdir -p "$pkg"
           assets=()
-          # NOTE: Added boot.img to the release assets loop list below
           for f in Image Image.lz4 Image.gz vmlinux System.map ikconfig .config boot.img; do
             [ -f "$f" ] && assets+=("$f")
           done
@@ -928,6 +926,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS, MGLRU & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
