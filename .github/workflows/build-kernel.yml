@@ -771,13 +771,14 @@ jobs:
           	return 0;
           }
           device_initcall(audit_fsnotify_init);
+          EOF
 
       - name: Build kernel
         run: |
           chmod +x ./build-kernel.sh
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
 
-            - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
+      - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
           BOOT_IMG_URL: "https://www.dropbox.com/scl/fi/spyybws553f9e6gfefjyg/boot.img?rlkey=5jg26qajti7fihjxji1dlb6sb&st=07is9nuc&dl=1"
         shell: bash
@@ -870,7 +871,6 @@ jobs:
           cp repack/output/boot.img "$GITHUB_WORKSPACE/work/dist/boot.img"
           echo "✅ Final boot.img safely stored!"
           
-
       - name: Save ccache cache
         if: ${{ inputs.ccache && always() }}
         uses: actions/cache/save@v4
