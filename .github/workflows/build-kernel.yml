@@ -550,6 +550,10 @@ jobs:
           chmod +x scripts/setlocalversion
           echo "✅ LOCALVERSION spoofing applied!"
 
+          echo "=== 6. Fixing broken irqdomain.h in Steambot12 ==="
+          sed -i 's/#endif \/\* _LINUX_IRQDOMAIN_H \*\//#if 1\n#endif \/\* _LINUX_IRQDOMAIN_H \*\//g' include/linux/irqdomain.h
+          echo "✅ irqdomain.h fixed!"
+
       - name: Ensuring clean standard audit_fsnotify.c
         run: |
           cd work/common
