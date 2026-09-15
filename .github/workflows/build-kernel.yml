@@ -236,7 +236,7 @@ jobs:
           done
           echo "✅ All .patch files applied!"
 
-          echo "=== 3. Directly Injecting Spoof Modifications via Python & Fixing Inotify ==="
+          echo "=== 3. Directly Injecting Spoof Modifications via Python (ZERO-LAG OVERKILL LEXER) ==="
           python3 - << 'EOF'
           import os
           import re
@@ -282,32 +282,7 @@ jobs:
               if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
               return content, False
 
-          # AUTOMATIC FIX FOR INOTIFY_USER.C BUILD ERRORS (mask, INOTIFY_MARK_FLAGS, inotify_arg_to_flags)
-          inotify_path = "fs/notify/inotify/inotify_user.c"
-          if os.path.exists(inotify_path):
-              with open(inotify_path, "r") as f: inotify_content = f.read()
-              if "inotify_arg_to_flags" not in inotify_content:
-                  inotify_fix = r"""
-          #ifndef INOTIFY_MARK_FLAGS
-          #define INOTIFY_MARK_FLAGS (IN_CLOEXEC | IN_NONBLOCK)
-          #endif
-          static int inotify_arg_to_flags(u32 arg)
-          {
-              int flags = 0;
-              if (arg & IN_CLOEXEC)
-                  flags |= O_CLOEXEC;
-              if (arg & IN_NONBLOCK)
-                  flags |= O_NONBLOCK;
-              return flags;
-          }
-          """
-                  inotify_content = inotify_fix + "\n" + inotify_content
-              # Ensure mask is declared if missing in susfs/inotify hooks
-              inotify_content = inotify_content.replace("mask =", "unsigned int mask = 0;\n\tmask =")
-              with open(inotify_path, "w") as f: f.write(inotify_content)
-              print("✅ inotify_user.c patched successfully!")
-
-          # 1. fs/proc/cmdline.c
+          # 1. fs/proc/cmdline.c - ZERO MUTEX HEAVY LAG [ATOMIC FastPath setup]
           cmdline_path = "fs/proc/cmdline.c"
           if os.path.exists(cmdline_path):
               with open(cmdline_path, "r") as f: content = f.read()
