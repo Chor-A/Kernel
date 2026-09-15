@@ -44,7 +44,8 @@ on:
       append_config:
         description: 'Extra literal CONFIG_* lines injected into the defconfig'
         required: false
-        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y"
+        # 👇 YAHAN DEKHIYE: MGLRU FLAGS ADD HO GAYE HAIN (CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y) 👇
+        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y"
       ccache:
         description: 'Accelerate with ccache.'
         type: boolean
@@ -121,6 +122,37 @@ jobs:
           if [ -n "${{ env.KERNEL_COMMIT }}" ]; then
             git checkout ${{ env.KERNEL_COMMIT }}
           fi
+
+      - name: Purge le9uo commits (MGLRU Preparation)
+        run: |
+          cd work/common
+          echo "=== 1. Dynamically Finding and Reverting all le9uo commits ==="
+          
+          # grep="le9uo" exactly searches for "le9uo" in the commit heading/message
+          LE9UO_COMMITS=$(git log --grep="le9uo" -i --format="%H")
+          
+          if [ -n "$LE9UO_COMMITS" ]; then
+            echo "Found le9uo commits:"
+            echo "$LE9UO_COMMITS"
+            
+            for commit in $LE9UO_COMMITS; do
+              echo "-> Reverting: $commit"
+              git revert --no-commit $commit || {
+                echo "⚠️ Conflict on $commit! Aborting this specific revert to prevent build crash..."
+                git revert --abort
+              }
+            done
+            
+            git commit -m "chore: Purge le9uo commits for MGLRU" || true
+            echo "✅ le9uo commits successfully reverted!"
+          else
+            echo "✅ No le9uo commits found!"
+          fi
+
+          echo "=== 2. Hard Purge Leftover Kconfig Strings (Failsafe) ==="
+          sed -i '/config CLEAN_LOW_RATIO/,/knob./d' mm/Kconfig 2>/dev/null || true
+          sed -i '/clean_low_ratio/d' mm/Kconfig 2>/dev/null || true
+          echo "✅ Hard purge complete!"
 
       - name: Clean Hardcoded NoMount & Integrate Official NoMount (Method 3 - Dev Branch)
         run: |
@@ -321,7 +353,16 @@ jobs:
           					replace_str(spoofed_cmdline, len + 256, "androidboot.flash.locked=0", "androidboot.flash.locked=1");
           					replace_str(spoofed_cmdline, len + 256, "androidboot.selinux=permissive", "androidboot.selinux=enforcing");
           					replace_str(spoofed_cmdline, len + 256, "androidboot.buildvariant=userdebug", "androidboot.buildvariant=user");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.buildvariant=eng", "androidboot.buildvariant=user");
+          					replace_str(spoofed_cmdline, len + 256, "buildvariant=userdebug", "buildvariant=user");
+          					replace_str(spoofed_cmdline, len + 256, "buildvariant=eng", "buildvariant=user");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.mode=custom", "androidboot.mode=normal");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.mode=recovery", "androidboot.mode=normal");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.secureboot=0", "androidboot.secureboot=1");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.lockstate=unlocked", "androidboot.lockstate=locked");
           					replace_str(spoofed_cmdline, len + 256, "androidboot.warranty_bit=1", "androidboot.warranty_bit=0");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.warranty_bits=1", "androidboot.warranty_bits=0");
+          					replace_str(spoofed_cmdline, len + 256, "androidboot.force_normal_boot=0", "androidboot.force_normal_boot=1");
           				}
           			}
           			mutex_unlock(&spoofed_cmdline_mutex);
