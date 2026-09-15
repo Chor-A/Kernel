@@ -787,17 +787,17 @@ jobs:
           mkdir -p repack/output
 
           # 1. Fetch unpack_bootimg
-          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-gki/unpack_bootimg.py?format=TEXT" -O encoded_unpack
+          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/master/unpack_bootimg.py?format=TEXT" -O encoded_unpack
           base64 -d encoded_unpack > unpack_bootimg.py
           
           # 2. Fetch mkbootimg
-          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/android12-gki/mkbootimg.py?format=TEXT" -O encoded_repack
+          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/master/mkbootimg.py?format=TEXT" -O encoded_repack
           base64 -d encoded_repack > mkbootimg.py
 
           # 3. Fetch AVB tool and AOSP Test Key (CRUCIAL for RSA2048 Signature)
-          wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/main/avbtool.py?format=TEXT" -O encoded_avb
+          wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/master/avbtool.py?format=TEXT" -O encoded_avb
           base64 -d encoded_avb > avbtool.py
-          wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/main/test/data/testkey_rsa2048.pem?format=TEXT" -O encoded_key
+          wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/master/test/data/testkey_rsa2048.pem?format=TEXT" -O encoded_key
           base64 -d encoded_key > testkey_rsa2048.pem
 
           chmod +x unpack_bootimg.py mkbootimg.py avbtool.py
