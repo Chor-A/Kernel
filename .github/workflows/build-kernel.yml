@@ -785,22 +785,10 @@ jobs:
           echo "=== 1. Download official STABLE gki toolchain modules ==="
           mkdir -p repack/extracted
           mkdir -p repack/output
-
-          # 1. Fetch unpack_bootimg
-          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/master/unpack_bootimg.py?format=TEXT" -O encoded_unpack
-          base64 -d encoded_unpack > unpack_bootimg.py
           
-          # 2. Fetch mkbootimg
-          wget -q "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/master/mkbootimg.py?format=TEXT" -O encoded_repack
-          base64 -d encoded_repack > mkbootimg.py
-
-          # 3. Fetch AVB tool and AOSP Test Key (CRUCIAL for RSA2048 Signature)
-          wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/master/avbtool.py?format=TEXT" -O encoded_avb
-          base64 -d encoded_avb > avbtool.py
-          wget -q "https://android.googlesource.com/platform/external/avb/+/refs/heads/master/test/data/testkey_rsa2048.pem?format=TEXT" -O encoded_key
-          base64 -d encoded_key > testkey_rsa2048.pem
-
-          chmod +x unpack_bootimg.py mkbootimg.py avbtool.py
+          # Clone the full mkbootimg and avb toolchains to avoid ModuleNotFound errors
+          git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg repack/mkbootimg_tool
+          git clone --depth=1 https://android.googlesource.com/platform/external/avb repack/avb_tool
 
           echo "--> Pulling ROM stock file dynamically..."
           curl -L "$BOOT_IMG_URL" -o repack/stock_boot.img
@@ -818,7 +806,7 @@ jobs:
           fi
 
           echo "--> Executing extraction parser step on ROM target..."
-          python3 unpack_bootimg.py --boot_img repack/stock_boot.img --out repack/extracted > repack/extracted/configs.txt
+          python3 repack/mkbootimg_tool/unpack_bootimg.py --boot_img repack/stock_boot.img --out repack/extracted > repack/extracted/configs.txt
           
           echo "Extracted boot image configuration:"
           cat repack/extracted/configs.txt
@@ -849,7 +837,7 @@ jobs:
           kernel_path = os.environ.get("IMAGE_PATH")
 
           cmd = [
-              "python3", "mkbootimg.py",
+              "python3", "repack/mkbootimg_tool/mkbootimg.py",
               "--kernel", kernel_path,
               "--header_version", str(header_version),
               "--pagesize", str(page_size),
@@ -883,11 +871,11 @@ jobs:
           fi
 
           echo "=== 3. Restructure and Register signatures validations on repacked Image ($PARTITION_SIZE) ==="
-          python3 avbtool.py add_hash_footer \
+          python3 repack/avb_tool/avbtool.py add_hash_footer \
             --image "repack/output/boot_unavb.img" \
             --partition_name boot \
             --partition_size "$PARTITION_SIZE" \
-            --key testkey_rsa2048.pem \
+            --key "repack/avb_tool/test/data/testkey_rsa2048.pem" \
             --algorithm SHA256_RSA2048 \
             --output "repack/output/boot.img"
 
