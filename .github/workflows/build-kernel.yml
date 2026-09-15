@@ -44,7 +44,7 @@ on:
       append_config:
         description: 'Extra literal CONFIG_* lines injected into the defconfig'
         required: false
-        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y"
+        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_SCHED_BORE=n"
       ccache:
         description: 'Accelerate with ccache.'
         type: boolean
@@ -90,7 +90,6 @@ jobs:
       - name: Configure Git Safe Directory & Identity
         run: |
           git config --global --add safe.directory "*"
-          # 👇 Asli Identity yahan add kar di gayi hai 👇
           git config --global user.email "Antonio_Nelson@proton.me"
           git config --global user.name "Chor-A"
 
@@ -130,7 +129,6 @@ jobs:
           cd work/common
           echo "=== 1. Dynamically Finding and Reverting all le9uo commits ==="
           
-          # grep="le9uo" exactly searches for "le9uo" in the commit heading/message
           LE9UO_COMMITS=$(git log --grep="le9uo" -i --format="%H")
           
           if [ -n "$LE9UO_COMMITS" ]; then
@@ -145,7 +143,6 @@ jobs:
               }
             done
             
-            # Ab ye aapki mail aur username se commit hoga!
             git commit -m "chore: Purge le9uo commits for MGLRU" || true
             echo "✅ le9uo commits successfully reverted!"
           else
