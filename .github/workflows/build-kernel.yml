@@ -777,7 +777,7 @@ jobs:
           chmod +x ./build-kernel.sh
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
 
-      - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
+            - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
           BOOT_IMG_URL: "https://www.dropbox.com/scl/fi/spyybws553f9e6gfefjyg/boot.img?rlkey=5jg26qajti7fihjxji1dlb6sb&st=07is9nuc&dl=1"
         shell: bash
@@ -786,7 +786,7 @@ jobs:
           mkdir -p repack/extracted
           mkdir -p repack/output
           
-          # Clone the full mkbootimg and avb toolchains to avoid ModuleNotFound errors
+          # Clone full toolchains to fix ModuleNotFoundError
           git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg repack/mkbootimg_tool
           git clone --depth=1 https://android.googlesource.com/platform/external/avb repack/avb_tool
 
@@ -807,9 +807,6 @@ jobs:
 
           echo "--> Executing extraction parser step on ROM target..."
           python3 repack/mkbootimg_tool/unpack_bootimg.py --boot_img repack/stock_boot.img --out repack/extracted > repack/extracted/configs.txt
-          
-          echo "Extracted boot image configuration:"
-          cat repack/extracted/configs.txt
 
           echo "=== 2. Launch Intelligent Config Python Swapper Engine ==="
           python3 - << 'EOF'
@@ -820,12 +817,10 @@ jobs:
               for line in f:
                   if ":" in line:
                       key, val = line.split(":", 1)
-                      clean_key = key.strip().lower().replace("_", " ")
-                      config[clean_key] = val.strip()
+                      config[key.strip().lower().replace("_", " ")] = val.strip()
 
           header_version = config.get("boot image header version") or config.get("header version") or "4"
           page_size = config.get("page size") or "4096"
-          
           cmdline = config.get("command line args") or config.get("command line") or config.get("cmdline") or ""
           board_name = config.get("name") or config.get("board name") or config.get("board") or ""
           os_version = config.get("os version") or ""
@@ -834,14 +829,13 @@ jobs:
           if "androidboot.selinux=permissive" not in cmdline:
               cmdline = (cmdline + " androidboot.selinux=permissive").strip()
 
-          kernel_path = os.environ.get("IMAGE_PATH")
-
+          # IMPORTANT: Output directly to boot.img now
           cmd = [
               "python3", "repack/mkbootimg_tool/mkbootimg.py",
-              "--kernel", kernel_path,
+              "--kernel", os.environ.get("IMAGE_PATH"),
               "--header_version", str(header_version),
               "--pagesize", str(page_size),
-              "--output", "repack/output/boot_unavb.img"
+              "--output", "repack/output/boot.img"
           ]
 
           if cmdline: cmd.extend(["--cmdline", cmdline])
@@ -849,38 +843,33 @@ jobs:
           if os_version and os_version != "None": cmd.extend(["--os_version", os_version])
           if os_patch_level and os_patch_level != "None": cmd.extend(["--os_patch_level", os_patch_level])
 
-          if os.path.exists("repack/extracted/ramdisk"):
-              cmd.extend(["--ramdisk", "repack/extracted/ramdisk"])
-          if os.path.exists("repack/extracted/dtb"):
-              cmd.extend(["--dtb", "repack/extracted/dtb"])
-          if os.path.exists("repack/extracted/dtbo"):
-              cmd.extend(["--dtbo", "repack/extracted/dtbo"])
+          if os.path.exists("repack/extracted/ramdisk"): cmd.extend(["--ramdisk", "repack/extracted/ramdisk"])
+          if os.path.exists("repack/extracted/dtb"): cmd.extend(["--dtb", "repack/extracted/dtb"])
+          if os.path.exists("repack/extracted/dtbo"): cmd.extend(["--dtbo", "repack/extracted/dtbo"])
 
-          print("-> Executing python packing execution wrapper script call:")
-          print(" ".join(cmd))
-          
           res = subprocess.run(cmd)
           if res.returncode != 0:
-              print("::error:: Fail-safe pack command failed during runtime compilation phase.")
+              print("::error:: mkbootimg repack failed.")
               sys.exit(1)
           EOF
 
-          if [ ! -f "repack/output/boot_unavb.img" ]; then
-             echo "::error:: Combined Image intermediate build generated exceptions."
+          if [ ! -f "repack/output/boot.img" ]; then
+             echo "::error:: Repacked boot image not found."
              exit 1
           fi
 
-          echo "=== 3. Restructure and Register signatures validations on repacked Image ($PARTITION_SIZE) ==="
+          echo "=== 3. Register AVB Signatures ==="
+          # FIX: avbtool modifies the file in-place, removed the invalid --output flag
           python3 repack/avb_tool/avbtool.py add_hash_footer \
-            --image "repack/output/boot_unavb.img" \
+            --image "repack/output/boot.img" \
             --partition_name boot \
             --partition_size "$PARTITION_SIZE" \
             --key "repack/avb_tool/test/data/testkey_rsa2048.pem" \
-            --algorithm SHA256_RSA2048 \
-            --output "repack/output/boot.img"
+            --algorithm SHA256_RSA2048
 
-          echo "--> Final image safely stored on workflow compilation release artifacts."
           cp repack/output/boot.img "$GITHUB_WORKSPACE/work/dist/boot.img"
+          echo "✅ Final boot.img safely stored!"
+          
 
       - name: Save ccache cache
         if: ${{ inputs.ccache && always() }}
