@@ -236,7 +236,7 @@ jobs:
           done
           echo "✅ All .patch files applied!"
 
-          echo "=== 3. Directly Injecting Spoof Modifications via Python (ZERO-LAG OVERKILL LEXER) ==="
+          echo "=== 3. Directly Injecting Spoof Modifications via Python & Fixing Inotify ==="
           python3 - << 'EOF'
           import os
           import re
@@ -282,7 +282,32 @@ jobs:
               if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
               return content, False
 
-          # 1. fs/proc/cmdline.c - ZERO MUTEX HEAVY LAG [ATOMIC FastPath setup]
+          # AUTOMATIC FIX FOR INOTIFY_USER.C BUILD ERRORS (mask, INOTIFY_MARK_FLAGS, inotify_arg_to_flags)
+          inotify_path = "fs/notify/inotify/inotify_user.c"
+          if os.path.exists(inotify_path):
+              with open(inotify_path, "r") as f: inotify_content = f.read()
+              if "inotify_arg_to_flags" not in inotify_content:
+                  inotify_fix = r"""
+          #ifndef INOTIFY_MARK_FLAGS
+          #define INOTIFY_MARK_FLAGS (IN_CLOEXEC | IN_NONBLOCK)
+          #endif
+          static int inotify_arg_to_flags(u32 arg)
+          {
+              int flags = 0;
+              if (arg & IN_CLOEXEC)
+                  flags |= O_CLOEXEC;
+              if (arg & IN_NONBLOCK)
+                  flags |= O_NONBLOCK;
+              return flags;
+          }
+          """
+                  inotify_content = inotify_fix + "\n" + inotify_content
+              # Ensure mask is declared if missing in susfs/inotify hooks
+              inotify_content = inotify_content.replace("mask =", "unsigned int mask = 0;\n\tmask =")
+              with open(inotify_path, "w") as f: f.write(inotify_content)
+              print("✅ inotify_user.c patched successfully!")
+
+          # 1. fs/proc/cmdline.c
           cmdline_path = "fs/proc/cmdline.c"
           if os.path.exists(cmdline_path):
               with open(cmdline_path, "r") as f: content = f.read()
@@ -418,7 +443,7 @@ jobs:
                   with open(array_path, "w") as f: f.write(array_content)
                   print("✅ array.c -> SPOOFED (Direct check, fast!)")
 
-          # 4. Modify security/selinux/ss/services.c (SAFE BYPASS, FIX LOOP ISSUES)
+          # 4. Modify security/selinux/ss/services.c
           services_path = "security/selinux/ss/services.c"
           if os.path.exists(services_path):
               with open(services_path, "r") as f: serv_content = f.read()
@@ -435,7 +460,6 @@ jobs:
           			s_ids = rcu_dereference(global_spoof);
           			if (likely(s_ids)) {
           				bool spoof = false;
-          				/* Strictly match mapped integers, preventing random ClassID == 0 bypass errors mapping non-target policies (thermald, suspend crash fix). */
           				if (s_ids->cap_c && tclass == s_ids->cap_c) {
           					if (s_ids->fsck_t && scontext->type == s_ids->fsck_t && tcontext->type == s_ids->fsck_t) spoof = true;
           				} else if (s_ids->process_c && tclass == s_ids->process_c) {
@@ -444,7 +468,7 @@ jobs:
           					if (s_ids->adbd_t && s_ids->adbroot_t && scontext->type == s_ids->adbd_t && tcontext->type == s_ids->adbroot_t) spoof = true;
           				}
           				if (unlikely(spoof)) {
-          					avd->allowed = 0; /* Report as access denied blindly */
+          					avd->allowed = 0;
           					avd->auditdeny = 0;
           					avd->auditallow = 0;
           				}
@@ -549,10 +573,6 @@ jobs:
           EOF_LOCAL
           chmod +x scripts/setlocalversion
           echo "✅ LOCALVERSION spoofing applied!"
-
-          echo "=== 6. Fixing broken irqdomain.h in Steambot12 ==="
-          sed -i 's/#endif \/\* _LINUX_IRQDOMAIN_H \*\//#if 1\n#endif \/\* _LINUX_IRQDOMAIN_H \*\//g' include/linux/irqdomain.h
-          echo "✅ irqdomain.h fixed!"
 
       - name: Ensuring clean standard audit_fsnotify.c
         run: |
