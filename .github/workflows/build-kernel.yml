@@ -236,7 +236,7 @@ jobs:
           done
           echo "✅ All .patch files applied!"
 
-          echo "=== 3. Directly Injecting Spoof Modifications via Python (ZERO-LAG OVERKILL LEXER) ==="
+          echo "=== 3. Directly Injecting Spoof Modifications via Python (MAX-OPTIMIZED LEXER) ==="
           python3 - << 'EOF'
           import os
           import re
@@ -282,7 +282,7 @@ jobs:
               if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
               return content, False
 
-          # 1. fs/proc/cmdline.c - ZERO MUTEX HEAVY LAG [ATOMIC FastPath setup]
+          # 1. fs/proc/cmdline.c - OPTIMIZED ATOMIC FASTPATH
           cmdline_path = "fs/proc/cmdline.c"
           if os.path.exists(cmdline_path):
               with open(cmdline_path, "r") as f: content = f.read()
@@ -350,7 +350,7 @@ jobs:
               new_content, success = replace_c_func_overkill(content, pattern, replacement_func)
               if success:
                   with open(cmdline_path, "w") as f: f.write(new_content)
-                  print("✅ cmdline.c -> SPOOFED (0-Latency Optimized)")
+                  print("✅ cmdline.c -> SPOOFED (Optimized)")
 
           # 2. fs/proc/bootconfig.c 
           boot_path = "fs/proc/bootconfig.c"
@@ -403,22 +403,24 @@ jobs:
               new_boot_content, success = replace_c_func_overkill(boot_content, boot_pattern, boot_replacement)
               if success:
                   with open(boot_path, "w") as f: f.write(new_boot_content)
-                  print("✅ bootconfig.c -> SPOOFED (0-Latency Optimized)")
+                  print("✅ bootconfig.c -> SPOOFED (Optimized)")
 
-          # 3. Modify fs/proc/array.c
+          # 3. Modify fs/proc/array.c (OPTIMIZED: Eliminates redundant get_task_state calls)
           array_path = "fs/proc/array.c"
           if os.path.exists(array_path):
               with open(array_path, "r") as f: array_content = f.read()
               if '#include <linux/cred.h>' not in array_content:
                   array_content = array_content.replace('#include <linux/fs_struct.h>', '#include <linux/fs_struct.h>\n#include <linux/cred.h>')
+              
               tstate_target = 'seq_puts(m, "State:\\t");\n\tseq_puts(m, get_task_state(p));'
-              tstate_repl = 'seq_puts(m, "State:\\t");\n\tif (__kuid_val(current_uid()) >= 10000 && (*get_task_state(p) == \'t\' || *get_task_state(p) == \'T\'))\n\t\tseq_puts(m, "S (sleeping)");\n\telse\n\t\tseq_puts(m, get_task_state(p));'
+              tstate_repl = 'seq_puts(m, "State:\\t");\n\tconst char *tstate = get_task_state(p);\n\tif (__kuid_val(current_uid()) >= 10000 && (*tstate == \'t\' || *tstate == \'T\'))\n\t\tseq_puts(m, "S (sleeping)");\n\telse\n\t\tseq_puts(m, tstate);'
+              
               if tstate_target in array_content:
                   array_content = array_content.replace(tstate_target, tstate_repl)
                   with open(array_path, "w") as f: f.write(array_content)
-                  print("✅ array.c -> SPOOFED (Direct check, fast!)")
+                  print("✅ array.c -> SPOOFED (Optimized with local caching)")
 
-          # 4. Modify security/selinux/ss/services.c
+          # 4. Modify security/selinux/ss/services.c (OPTIMIZED: Fixed GFP_ATOMIC to GFP_KERNEL)
           services_path = "security/selinux/ss/services.c"
           if os.path.exists(services_path):
               with open(services_path, "r") as f: serv_content = f.read()
@@ -427,7 +429,7 @@ jobs:
               
               av_hook_injection = r"""\1
 
-          	/* --- ZERO-LATENCY SAFED AVC BYPASS --- */
+          	/* --- SAFED AVC BYPASS --- */
           	if (unlikely(avd->allowed) && scontext && tcontext) {
           		if (unlikely(__kuid_val(current_uid()) >= 10000)) {
           			struct selinux_spoof_ids *s_ids;
@@ -453,7 +455,7 @@ jobs:
           	}
           	/* ------------------------------------- */"""
 
-              if "ZERO-LATENCY SAFED" not in serv_content:
+              if "SAFED AVC BYPASS" not in serv_content:
                   serv_content = re.sub(target_av_call_regex, av_hook_injection, serv_content, count=1)
                   
                   engine_marker = '#include "policycap_names.h"'
@@ -467,7 +469,7 @@ jobs:
                       'static DEFINE_SPINLOCK(spoof_update_lock);\n\n'
                       'static void update_spoof_ids(struct selinux_policy *policy) {\n'
                       '\tstruct selinux_spoof_ids *new_ids, *old_ids; u32 i;\n'
-                      '\tnew_ids = kzalloc(sizeof(*new_ids), GFP_ATOMIC); if (!new_ids) return;\n'
+                      '\tnew_ids = kzalloc(sizeof(*new_ids), GFP_KERNEL); if (!new_ids) return;\n'
                       '\tfor (i=1; i<=policy->policydb.p_classes.nprim; i++) {\n'
                       '\t\tconst char *n = sym_name(&policy->policydb, SYM_CLASSES, i - 1); if(!n) continue;\n'
                       '\t\tif(!strcmp(n, "capability")) new_ids->cap_c=i;\n\t\telse if(!strcmp(n, "process")) new_ids->process_c=i;\n\t\telse if(!strcmp(n, "binder")) new_ids->binder_c=i;\n\t}\n'
@@ -488,9 +490,9 @@ jobs:
                   serv_content = serv_content.replace(commit_marker, commit_code, 1)
 
                   with open(services_path, "w") as f: f.write(serv_content)
-                  print("✅ services.c -> SPOOFED (Fast/Safe engine)")
+                  print("✅ services.c -> SPOOFED (Optimized with GFP_KERNEL)")
           EOF
-          echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
+          echo "✅ MAX-OPTIMIZED PYTHON SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
       - name: Setting up ReSukiSU
         run: |
