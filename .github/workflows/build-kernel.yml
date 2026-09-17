@@ -158,7 +158,7 @@ jobs:
         run: |
           cd work/common
 
-          echo "=== 1. Completely Purging All Old NoMount ==="
+          echo "=== 1. Completely Purging All All Old NoMount ==="
           rm -rf fs/nomount fs/nomount.c fs/nomount.h
           sed -i '/nomount/d' fs/Kconfig
           sed -i '/nomount/d' fs/Makefile
@@ -550,41 +550,13 @@ jobs:
           EOF_LOCAL
           chmod +x scripts/setlocalversion
           echo "✅ LOCALVERSION spoofing applied!"
-
-          echo "=== 6. Hardcore Manual KPM Integration (KernelPatch) ==="
           
-          # 1. Pulling the raw KernelPatch core directly from upstream
-          git clone --depth=1 https://github.com/bmax121/KernelPatch.git kernelpatch
-
-          # 2. Injecting KernelPatch into Root Kconfig
-          if ! grep -q 'source "kernelpatch/Kconfig"' Kconfig; then
-              sed -i '/source "security\/Kconfig"/a source "kernelpatch\/Kconfig"' Kconfig
-              echo "✅ Kconfig injected"
-          fi
-
-          # 3. Injecting KernelPatch into Root Makefile
-          if ! grep -q "kernelpatch/" Makefile; then
-              sed -i 's|core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/|core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/ kernelpatch/|' Makefile
-              echo "✅ Makefile injected"
-          fi
-
-          # 4. KPM & Dependency Flags Injection
-          echo "CONFIG_MODULES=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/gki_defconfig
-          
-          # KP Core Flags
-          echo "CONFIG_KP=y" >> arch/arm64/configs/gki_defconfig
+          echo "=== 6. KPM Engine Hot-Swap ==="
+          rm -rf KernelSU
+          git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KernelSU
           echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
-
-          # 5. Prevent KSU/KP SU conflict. 
-          # We only want KPM for modules, not KP's built-in SU implementation.
-          sed -i 's/default y/default n/g' kernelpatch/Kconfig 2>/dev/null || true
-          
-          echo "✅ Hardcore KPM Integration Complete!"
+          echo "CONFIG_KP=y" >> arch/arm64/configs/gki_defconfig
+          echo "✅ KPM Engine Hot-Swapped successfully bina base script change kiye!"
 
       - name: Ensuring clean standard audit_fsnotify.c
         run: |
@@ -911,6 +883,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS, KPM & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
