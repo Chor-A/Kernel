@@ -558,7 +558,7 @@ jobs:
           git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
           
           # Merge KPM source files carefully
-          cp -rf KPM_Temp/kernel/* KernelSU/kernel/
+          cp -rn KPM_Temp/kernel/* KernelSU/kernel/ 2>/dev/null || true
           
           # Clean up temp
           rm -rf KPM_Temp
