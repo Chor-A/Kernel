@@ -558,7 +558,7 @@ jobs:
           git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
           
           # Merge KPM source files carefully
-          cp -rn KPM_Temp/kernel/* KernelSU/kernel/ 2>/dev/null || true
+          cp -rf KPM_Temp/kernel/* KernelSU/kernel/
           
           # Clean up temp
           rm -rf KPM_Temp
@@ -897,3 +897,6 @@ jobs:
               --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
+Ye maine apply bhi kar diya thank you very much for fixing issue 
+
+But in log there is one warning missing header can we fix it as well?
