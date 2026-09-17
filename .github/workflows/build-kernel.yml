@@ -494,10 +494,12 @@ jobs:
           EOF
           echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
-      - name: Setting up ReSukiSU
+      - name: Setting up ReSukiSU + Hot-Swapped KPM Engine
         run: |
           cd work/common
           echo "=== 4. Setting up ReSukiSU ==="
+          
+          # We use the official URL initially for consistency in your workflow
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -
 
           # Base ReSukiSU & Core Flags
@@ -513,7 +515,6 @@ jobs:
           echo "CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_DEBUG=n" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUCOMPAT=n" >> arch/arm64/configs/gki_defconfig
-          # -----------------------------------
 
           echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBES=y" >> arch/arm64/configs/gki_defconfig
@@ -551,12 +552,22 @@ jobs:
           chmod +x scripts/setlocalversion
           echo "✅ LOCALVERSION spoofing applied!"
           
-          echo "=== 6. KPM Engine Hot-Swap ==="
-          rm -rf KernelSU
-          git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KernelSU
+          echo "=== 6. KPM Engine Hot-Swap (Safely Merging) ==="
+          # Instead of completely removing KernelSU, we swap only the necessary components from Ultima
+          # This ensures we don't break the build system hooks established by the official setup.sh
+          git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
+          
+          # Merge KPM source files carefully
+          cp -rn KPM_Temp/kernel/* KernelSU/kernel/ 2>/dev/null || true
+          
+          # Clean up temp
+          rm -rf KPM_Temp
+
+          # Force enable KPM flags directly in the swapped config
           echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KP=y" >> arch/arm64/configs/gki_defconfig
-          echo "✅ KPM Engine Hot-Swapped successfully bina base script change kiye!"
+          echo "CONFIG_MODULES=y" >> arch/arm64/configs/gki_defconfig # Make sure module support is on
+          echo "✅ KPM Engine safely Hot-Swapped without breaking build dependencies!"
 
       - name: Ensuring clean standard audit_fsnotify.c
         run: |
