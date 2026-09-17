@@ -897,6 +897,3 @@ jobs:
               --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
-Ye maine apply bhi kar diya thank you very much for fixing issue 
-
-But in log there is one warning missing header can we fix it as well?
