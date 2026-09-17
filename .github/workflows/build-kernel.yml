@@ -413,7 +413,7 @@ jobs:
                   array_content = array_content.replace('#include <linux/fs_struct.h>', '#include <linux/fs_struct.h>\n#include <linux/cred.h>')
               
               tstate_target = 'seq_puts(m, "State:\\t");\n\tseq_puts(m, get_task_state(p));'
-              tstate_repl = 'seq_puts(m, "State:\\t");\n\if (__kuid_val(current_uid()) >= 10000 && (*get_task_state(p) == \'t\' || *get_task_state(p) == \'T\'))\n\t\tseq_puts(m, "S (sleeping)");\n\telse\n\t\tseq_puts(m, get_task_state(p));'
+              tstate_repl = 'seq_puts(m, "State:\\t");\n\tif (__kuid_val(current_uid()) >= 10000 && (*get_task_state(p) == \'t\' || *get_task_state(p) == \'T\'))\n\t\tseq_puts(m, "S (sleeping)");\n\telse\n\t\tseq_puts(m, get_task_state(p));'
               
               if tstate_target in array_content:
                   array_content = array_content.replace(tstate_target, tstate_repl)
@@ -558,7 +558,7 @@ jobs:
           git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
           
           # Merge KPM source files carefully
-          cp -rf KPM_Temp/kernel/* KernelSU/kernel/
+          cp -rn KPM_Temp/kernel/* KernelSU/kernel/ 2>/dev/null || true
           
           # Clean up temp
           rm -rf KPM_Temp
