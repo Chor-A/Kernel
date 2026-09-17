@@ -158,7 +158,7 @@ jobs:
         run: |
           cd work/common
 
-          echo "=== 1. Completely Purging All All Old NoMount ==="
+          echo "=== 1. Completely Purging All Old NoMount ==="
           rm -rf fs/nomount fs/nomount.c fs/nomount.h
           sed -i '/nomount/d' fs/Kconfig
           sed -i '/nomount/d' fs/Makefile
