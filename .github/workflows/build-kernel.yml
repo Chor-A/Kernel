@@ -494,7 +494,7 @@ jobs:
           EOF
           echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
-      - name: Setting up Modern ReSukiSU + Surgical KPM Transplant (Dynamic Routing)
+      - name: Setting up Modern ReSukiSU + Surgical KPM Transplant (Auto-Heal Structs)
         run: |
           cd work/common
           
@@ -505,11 +505,9 @@ jobs:
           git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
           mkdir -p KernelSU/kernel/kpm
           cp KPM_Temp/kernel/kpm/* KernelSU/kernel/kpm/
-          rm -rf KPM_Temp
-          echo "✅ Extracted KPM source from Ultima."
-
-          echo "=== 3. Resolving KPM Command Enumerations & Hooks ==="
-          # Inject KPM definitions directly into kpm.h to bypass missing uapi/supercall.h
+          
+          echo "=== 3. Resolving KPM Command Enumerations & Missing Structs ==="
+          # Inject KPM definitions directly into kpm.h
           cat << 'EOF' >> KernelSU/kernel/kpm/kpm.h
           #ifndef KSU_KPM_LOAD
           #define KSU_KPM_LOAD 31
@@ -521,10 +519,61 @@ jobs:
           #define KSU_KPM_VERSION 37
           #endif
           EOF
-          echo "✅ Injected KPM definitions directly into kpm.h"
+          
+          # Dynamically extract missing KPM structs from Ultima's supercall.h
+          python3 - << 'EOF'
+          import os
+
+          def extract_structs(filepath):
+              if not os.path.exists(filepath): return []
+              with open(filepath, "r") as f:
+                  text = f.read()
+              
+              results = []
+              idx = 0
+              while True:
+                  idx = text.find("struct ", idx)
+                  if idx == -1: break
+                  
+                  brace_start = text.find("{", idx)
+                  if brace_start == -1:
+                      idx += 6
+                      continue
+                      
+                  struct_name = text[idx:brace_start].strip()
+                  if "kpm" not in struct_name:
+                      idx = brace_start
+                      continue
+                      
+                  braces = 0
+                  end = -1
+                  for i in range(brace_start, len(text)):
+                      if text[i] == '{': braces += 1
+                      elif text[i] == '}':
+                          braces -= 1
+                          if braces == 0:
+                              end = text.find(";", i)
+                              if end != -1:
+                                  results.append(text[idx:end+1])
+                              break
+                  idx = end if end != -1 else brace_start
+              return results
+
+          structs = extract_structs("KPM_Temp/kernel/uapi/supercall.h")
+          if structs:
+              with open("KernelSU/kernel/kpm/kpm.h", "a") as f:
+                  f.write("\n/* --- DYNAMICALLY EXTRACTED KPM STRUCTS --- */\n")
+                  f.write("#ifndef KSU_KPM_STRUCTS\n#define KSU_KPM_STRUCTS\n")
+                  for s in set(structs):
+                      f.write(s + "\n\n")
+                  f.write("#endif\n")
+                  print("✅ Extracted", len(set(structs)), "KPM structs into kpm.h")
+          EOF
+          
+          rm -rf KPM_Temp
+          echo "✅ KPM missing structures dynamically patched!"
 
           echo "=== 4. Hook KPM into Main Command Router ==="
-          # Dynamically search for wherever ReSukiSU moved the command switch
           ROUTER_FILE=$(grep -rl "switch (cmd) {" KernelSU/kernel/ | head -n 1)
           if [ -n "$ROUTER_FILE" ]; then
               echo "Found KSU router at: $ROUTER_FILE"
@@ -540,16 +589,14 @@ jobs:
                       return do_kpm(arg);\
           #endif' "$ROUTER_FILE"
               
-              # Provide extern and definitions directly to the router file
               sed -i '1i #ifdef CONFIG_KPM\nextern int do_kpm(void __user *arg);\n#ifndef KSU_KPM_LOAD\n#define KSU_KPM_LOAD 31\n#define KSU_KPM_UNLOAD 32\n#define KSU_KPM_NUM 33\n#define KSU_KPM_INFO 34\n#define KSU_KPM_LIST 35\n#define KSU_KPM_CONTROL 36\n#define KSU_KPM_VERSION 37\n#endif\n#endif\n' "$ROUTER_FILE"
               echo "✅ Successfully hooked 'do_kpm' routing into $ROUTER_FILE!"
           else
-              echo "❌ ERROR: Could not find command router! ReSukiSU might have fundamentally changed its core."
+              echo "❌ ERROR: Could not find command router!"
               exit 1
           fi
 
           echo "=== 5. Register in Build Environment (Kbuild & Kconfig) ==="
-          # Dynamically choose Kbuild or Makefile depending on what exists
           if [ -f "KernelSU/kernel/Kbuild" ]; then
               MAKE_FILE="KernelSU/kernel/Kbuild"
           else
@@ -569,23 +616,16 @@ jobs:
           fi
 
           echo "=== 6. Define Configurations (KPM + KProbes + SuSFS) ==="
-          # Standard
           echo "CONFIG_KSU=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_TOOLKIT_SUPPORT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_INLINE_HOOK=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y" >> arch/arm64/configs/gki_defconfig
-          
-          # Crucial modules/probes support for KPM
           echo "CONFIG_MODULES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
-          
-          # Native Enable for KPM
           echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KP=y" >> arch/arm64/configs/gki_defconfig
-
-          # SuSFS (Restored Missing Flags for Full Stealth)
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
