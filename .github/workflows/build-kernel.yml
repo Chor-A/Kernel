@@ -494,7 +494,7 @@ jobs:
           EOF
           echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
-      - name: Setting up Modern ReSukiSU + Surgical KPM Transplant 
+      - name: Setting up Modern ReSukiSU + Surgical KPM Transplant (Screenshot Accurate)
         run: |
           cd work/common
           
@@ -504,15 +504,14 @@ jobs:
           echo "=== 2. Transplant KPM Directory from Ultima ==="
           git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
           
-          # Move files carefully exactly how you showed them
+          # Screenshot (3417.png) confirms kpm directory existence
           mkdir -p KernelSU/kernel/kpm
           cp KPM_Temp/kernel/kpm/* KernelSU/kernel/kpm/
           rm -rf KPM_Temp
           echo "✅ Extracted KPM source from Ultima."
 
-          echo "=== 3. Resolving KPM Command Enumerations ==="
-          # Because modern ReSukiSU likely deleted the KPM command IDs in uapi/supercall.h,
-          # we have to explicitly map them in the header so kpm.c compiles without 'undeclared identifier' crashes!
+          echo "=== 3. Resolving KPM Command Enumerations (uapi/supercall.h) ==="
+          # Screenshot (3418.png) shows uapi/supercall.h was modified to remove enums
           if ! grep -q "KSU_KPM_LOAD" KernelSU/kernel/uapi/supercall.h; then
               sed -i '/enum su_cmd {/a \
                   KSU_KPM_LOAD = 31,\
@@ -526,11 +525,10 @@ jobs:
               echo "✅ Restored missing KPM enum hooks inside supercall.h!"
           fi
 
-          echo "=== 4. Hook KPM into Modern KernelSU Main Command Router ==="
-          # Instead of kpm_init, your code reveals we must route supercalls via do_kpm(arg)
-          CORE_FILE="KernelSU/kernel/core.c"
-          if grep -q "switch (cmd) {" "$CORE_FILE"; then
-              # Inject our KPM supercall redirector right at the top of the command router switch (Fixed bash sed syntax)
+          echo "=== 4. Hook KPM into Main Command Router (dispatch.c) ==="
+          # Screenshot (3417.png) confirms routing was removed from kernel/supercall/dispatch.c
+          DISPATCH_FILE="KernelSU/kernel/supercall/dispatch.c"
+          if [ -f "$DISPATCH_FILE" ] && grep -q "switch (cmd) {" "$DISPATCH_FILE"; then
               sed -i '/switch (cmd) {/a \
           #ifdef CONFIG_KPM\
                   case KSU_KPM_LOAD:\
@@ -541,25 +539,28 @@ jobs:
                   case KSU_KPM_CONTROL:\
                   case KSU_KPM_VERSION:\
                       return do_kpm(arg);\
-          #endif' "$CORE_FILE"
+          #endif' "$DISPATCH_FILE"
               
-              # Provide the external declaration so core.c recognizes the KPM file 
-              sed -i '1i #ifdef CONFIG_KPM\nextern int do_kpm(void __user *arg);\n#endif\n' "$CORE_FILE"
-              echo "✅ Successfully transplanted 'do_kpm' routing to the userspace handler!"
+              # External declaration required for dispatch.c to see KPM
+              sed -i '1i #ifdef CONFIG_KPM\nextern int do_kpm(void __user *arg);\n#endif\n' "$DISPATCH_FILE"
+              echo "✅ Successfully hooked 'do_kpm' routing into supercall/dispatch.c!"
           fi
 
-          echo "=== 5. Register in Build Environment ==="
-          MAKEFILE="KernelSU/kernel/Makefile"
-          if ! grep -q "kpm/" "$MAKEFILE"; then
-              # Hooking ReSukiSU's single object structure 
-              if grep -q "kernelsu-objs" "$MAKEFILE"; then
-                  sed -i '/kernelsu-objs +=/a kernelsu-objs += kpm/kpm.o kpm/super_access.o kpm/compact.o' "$MAKEFILE"
-              elif grep -q "ksu-objs" "$MAKEFILE"; then
-                  sed -i '/ksu-objs +=/a ksu-objs += kpm/kpm.o kpm/super_access.o kpm/compact.o' "$MAKEFILE"
+          echo "=== 5. Register in Build Environment (Kbuild & Kconfig) ==="
+          # Screenshot (3417.png) confirms kernel/Kbuild and kernel/Kconfig were modified
+          KBUILD_FILE="KernelSU/kernel/Kbuild"
+          if [ -f "$KBUILD_FILE" ] && ! grep -q "kpm/" "$KBUILD_FILE"; then
+              if grep -q "kernelsu-objs" "$KBUILD_FILE"; then
+                  sed -i '/kernelsu-objs +=/a kernelsu-objs += kpm/kpm.o kpm/super_access.o kpm/compact.o' "$KBUILD_FILE"
+              elif grep -q "ksu-objs" "$KBUILD_FILE"; then
+                  sed -i '/ksu-objs +=/a ksu-objs += kpm/kpm.o kpm/super_access.o kpm/compact.o' "$KBUILD_FILE"
               fi
+              echo "✅ Added KPM objects to Kbuild!"
           fi
+          
           if ! grep -q "KPM" KernelSU/kernel/Kconfig; then
              echo -e "\nconfig KPM\n    bool \"KernelSU Plugin Module Engine\"\n    default y\nconfig KP\n    bool \"Kernel Probes Wrapper\"\n    default y" >> KernelSU/kernel/Kconfig
+             echo "✅ Added KPM configs to Kconfig!"
           fi
 
           echo "=== 6. Define Configurations (KPM + KProbes + SuSFS) ==="
@@ -569,7 +570,7 @@ jobs:
           echo "CONFIG_KSU_INLINE_HOOK=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y" >> arch/arm64/configs/gki_defconfig
           
-          # Crucial modules/probes support (KPM fails natively without these in standard environments)
+          # Crucial modules/probes support for KPM
           echo "CONFIG_MODULES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
