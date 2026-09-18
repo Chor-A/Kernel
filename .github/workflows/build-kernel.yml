@@ -494,44 +494,97 @@ jobs:
           EOF
           echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
-      - name: Setting up ReSukiSU + Hot-Swapped KPM Engine
+      - name: Setting up Modern ReSukiSU + Surgical KPM Transplant 
         run: |
           cd work/common
-          echo "=== 4. Setting up ReSukiSU ==="
           
-          # We use the official URL initially for consistency in your workflow
+          echo "=== 1. Download Maintained ReSukiSU ==="
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -
 
-          # Base ReSukiSU & Core Flags
-          sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/gki_defconfig
+          echo "=== 2. Transplant KPM Directory from Ultima ==="
+          git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
           
-          # --- ReSukiSU Exclusive Features (Inline Hooks required for SuSFS integration) ---
-          echo "CONFIG_KSU_TOOLKIT_SUPPORT=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SENTINEL=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_INLINE_HOOK=y" >> arch/arm64/configs/gki_defconfig
-          
-          # --- Extra Stealth & Cleanup ---
-          echo "CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_DEBUG=n" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUCOMPAT=n" >> arch/arm64/configs/gki_defconfig
+          # Move files carefully exactly how you showed them
+          mkdir -p KernelSU/kernel/kpm
+          cp KPM_Temp/kernel/kpm/* KernelSU/kernel/kpm/
+          rm -rf KPM_Temp
+          echo "✅ Extracted KPM source from Ultima."
 
-          echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/gki_defconfig
+          echo "=== 3. Resolving KPM Command Enumerations ==="
+          # Because modern ReSukiSU likely deleted the KPM command IDs in uapi/supercall.h,
+          # we have to explicitly map them in the header so kpm.c compiles without 'undeclared identifier' crashes!
+          if ! grep -q "KSU_KPM_LOAD" KernelSU/kernel/uapi/supercall.h; then
+              sed -i '/enum su_cmd {/a \
+                  KSU_KPM_LOAD = 31,\
+                  KSU_KPM_UNLOAD = 32,\
+                  KSU_KPM_NUM = 33,\
+                  KSU_KPM_INFO = 34,\
+                  KSU_KPM_LIST = 35,\
+                  KSU_KPM_CONTROL = 36,\
+                  KSU_KPM_VERSION = 37,\
+              ' KernelSU/kernel/uapi/supercall.h
+              echo "✅ Restored missing KPM enum hooks inside supercall.h!"
+          fi
+
+          echo "=== 4. Hook KPM into Modern KernelSU Main Command Router ==="
+          # Instead of kpm_init, your code reveals we must route supercalls via do_kpm(arg)
+          CORE_FILE="KernelSU/kernel/core.c"
+          if grep -q "switch (cmd) {" "$CORE_FILE"; then
+              # Inject our KPM supercall redirector right at the top of the command router switch (Fixed bash sed syntax)
+              sed -i '/switch (cmd) {/a \
+          #ifdef CONFIG_KPM\
+                  case KSU_KPM_LOAD:\
+                  case KSU_KPM_UNLOAD:\
+                  case KSU_KPM_NUM:\
+                  case KSU_KPM_INFO:\
+                  case KSU_KPM_LIST:\
+                  case KSU_KPM_CONTROL:\
+                  case KSU_KPM_VERSION:\
+                      return do_kpm(arg);\
+          #endif' "$CORE_FILE"
+              
+              # Provide the external declaration so core.c recognizes the KPM file 
+              sed -i '1i #ifdef CONFIG_KPM\nextern int do_kpm(void __user *arg);\n#endif\n' "$CORE_FILE"
+              echo "✅ Successfully transplanted 'do_kpm' routing to the userspace handler!"
+          fi
+
+          echo "=== 5. Register in Build Environment ==="
+          MAKEFILE="KernelSU/kernel/Makefile"
+          if ! grep -q "kpm/" "$MAKEFILE"; then
+              # Hooking ReSukiSU's single object structure 
+              if grep -q "kernelsu-objs" "$MAKEFILE"; then
+                  sed -i '/kernelsu-objs +=/a kernelsu-objs += kpm/kpm.o kpm/super_access.o kpm/compact.o' "$MAKEFILE"
+              elif grep -q "ksu-objs" "$MAKEFILE"; then
+                  sed -i '/ksu-objs +=/a ksu-objs += kpm/kpm.o kpm/super_access.o kpm/compact.o' "$MAKEFILE"
+              fi
+          fi
+          if ! grep -q "KPM" KernelSU/kernel/Kconfig; then
+             echo -e "\nconfig KPM\n    bool \"KernelSU Plugin Module Engine\"\n    default y\nconfig KP\n    bool \"Kernel Probes Wrapper\"\n    default y" >> KernelSU/kernel/Kconfig
+          fi
+
+          echo "=== 6. Define Configurations (KPM + KProbes + SuSFS) ==="
+          # Standard
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_TOOLKIT_SUPPORT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_INLINE_HOOK=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y" >> arch/arm64/configs/gki_defconfig
+          
+          # Crucial modules/probes support (KPM fails natively without these in standard environments)
+          echo "CONFIG_MODULES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
+          
+          # Native Enable for KPM
+          echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KP=y" >> arch/arm64/configs/gki_defconfig
 
-          # --- Core KALLSYMS Flags ---
-          echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/gki_defconfig
-
-          # SuSFS Integration Flags
+          # SuSFS (Restored Missing Flags for Full Stealth)
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT_REDIRECT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> arch/arm64/configs/gki_defconfig
@@ -541,33 +594,13 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=n" >> arch/arm64/configs/gki_defconfig
-          echo "✅ ReSukiSU + SuSFS applied successfully!"
-
-          echo "=== 5. Absolute Stealth: LOCALVERSION Spoofing ==="
+          
+          echo "=== 7. LOCALVERSION Spoofing ==="
           cat << 'EOF_LOCAL' > scripts/setlocalversion
           #!/bin/sh
           echo "-android12-9"
           EOF_LOCAL
           chmod +x scripts/setlocalversion
-          echo "✅ LOCALVERSION spoofing applied!"
-          
-          echo "=== 6. KPM Engine Hot-Swap (Safely Merging) ==="
-          # Instead of completely removing KernelSU, we swap only the necessary components from Ultima
-          # This ensures we don't break the build system hooks established by the official setup.sh
-          git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
-          
-          # Merge KPM source files carefully
-          cp -rn KPM_Temp/kernel/* KernelSU/kernel/ 2>/dev/null || true
-          
-          # Clean up temp
-          rm -rf KPM_Temp
-
-          # Force enable KPM flags directly in the swapped config
-          echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KP=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_MODULES=y" >> arch/arm64/configs/gki_defconfig # Make sure module support is on
-          echo "✅ KPM Engine safely Hot-Swapped without breaking build dependencies!"
 
       - name: Ensuring clean standard audit_fsnotify.c
         run: |
