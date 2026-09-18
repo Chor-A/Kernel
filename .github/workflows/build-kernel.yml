@@ -494,7 +494,7 @@ jobs:
           EOF
           echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
-      - name: Setting up Modern ReSukiSU + Surgical KPM Transplant (Struct Auto-Heal)
+      - name: Setting up Modern ReSukiSU + Surgical KPM Transplant (Clean kpm.h Fix)
         run: |
           cd work/common
           
@@ -505,10 +505,15 @@ jobs:
           git clone --depth=1 https://github.com/spacealtctrl/ReSukiSU-Ultima.git KPM_Temp
           mkdir -p KernelSU/kernel/kpm
           cp KPM_Temp/kernel/kpm/* KernelSU/kernel/kpm/
+          rm -rf KPM_Temp
           
-          echo "=== 3. Resolving KPM Command Enumerations & Missing Structs ==="
-          # Inject KPM definitions directly into kpm.h
-          cat << 'EOF' >> KernelSU/kernel/kpm/kpm.h
+          echo "=== 3. Generating Clean kpm.h with Proper Structs ==="
+          cat << 'EOF' > KernelSU/kernel/kpm/kpm.h
+          #ifndef __KPM_H
+          #define __KPM_H
+
+          #include <linux/types.h>
+
           #ifndef KSU_KPM_LOAD
           #define KSU_KPM_LOAD 31
           #define KSU_KPM_UNLOAD 32
@@ -518,39 +523,28 @@ jobs:
           #define KSU_KPM_CONTROL 36
           #define KSU_KPM_VERSION 37
           #endif
-          EOF
-          
-          echo "--> Scanning Ultima repo for KPM structs..."
-          STRUCT_FILE=$(grep -rl "struct ksu_kpm_cmd" KPM_Temp/kernel/ | head -n 1)
-          if [ -n "$STRUCT_FILE" ]; then
-              echo "Found KPM structs in: $STRUCT_FILE"
-              echo -e "\n/* --- EXTRACTED KPM STRUCTS --- */\n" >> KernelSU/kernel/kpm/kpm.h
-              awk '/struct ksu_kpm_cmd/,/};/' "$STRUCT_FILE" >> KernelSU/kernel/kpm/kpm.h
-              awk '/struct ksu_kpm_info/,/};/' "$STRUCT_FILE" >> KernelSU/kernel/kpm/kpm.h 2>/dev/null || true
-          else
-              echo "⚠️ Fallback: Hardcoding KPM structs"
-              cat << 'EOF' >> KernelSU/kernel/kpm/kpm.h
-          /* --- HARDCODED KPM STRUCTS --- */
+
           struct ksu_kpm_cmd {
-              __u32 magic;
-              __u32 cmd;
+              __u32 control_code;
+              __u32 result_code;
               __u64 arg1;
               __u64 arg2;
               __u64 arg3;
               __u64 arg4;
           };
+
           struct ksu_kpm_info {
               __u32 magic;
               __u32 version;
               __u64 features;
-              __u64 arg1;
-              __u64 arg2;
           };
+
+          #endif
           EOF
-          fi
-          
-          rm -rf KPM_Temp
-          echo "✅ KPM missing structures patched!"
+          echo "✅ Clean kpm.h generated successfully!"
+
+          # Ensure kpm.c includes kpm.h properly
+          sed -i '1i #include <linux/types.h>\n#include "kpm.h"' KernelSU/kernel/kpm/kpm.c
 
           echo "=== 4. Hook KPM into Main Command Router ==="
           ROUTER_FILE=$(grep -rl "switch (cmd) {" KernelSU/kernel/ | head -n 1)
@@ -895,7 +889,7 @@ jobs:
           if os_patch_level and os_patch_level != "None": cmd.extend(["--os_patch_level", os_patch_level])
 
           if os.path.exists("repack/extracted/ramdisk"): cmd.extend(["--ramdisk", "repack/extracted/ramdisk"])
-          if os.path.exists("repack/extracted/dtb"): cmd.extend(["--dtb", "repack/extracted/dtb"])
+          if os.path.exists("repack/extracted/dtb"): cmd.extend("--dtb", "repack/extracted/dtb")
           if os.path.exists("repack/extracted/dtbo"): cmd.extend(["--dtbo", "repack/extracted/dtbo"])
 
           res = subprocess.run(cmd)
@@ -930,7 +924,7 @@ jobs:
       - name: Publish release
         if: ${{ inputs.publish_release }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GHTOKEN: ${{ github.token }}
         run: |
           tag="$RELEASE_TAG"
           if [ -z "$tag" ]; then
