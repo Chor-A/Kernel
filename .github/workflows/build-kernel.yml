@@ -757,40 +757,6 @@ jobs:
           chmod +x ./build-kernel.sh
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
 
-      # ---------------------------------------------------------
-      # YAHAN SE NAYA KPM INJECTION METHOD START HOTA HAI
-      # ---------------------------------------------------------
-      - name: Inject KPM (KernelPatch Standalone Method)
-        run: |
-          echo "=== 1. Downloading Latest kptools and kpimg ==="
-          wget https://github.com/bmax121/KernelPatch/releases/latest/download/kptools-linux
-          wget https://github.com/bmax121/KernelPatch/releases/latest/download/kpimg-android
-          chmod +x kptools-linux
-
-          echo "=== 2. Applying Binary Patch for Standalone KPM ==="
-          export IMAGE_PATH="$GITHUB_WORKSPACE/work/dist/Image"
-          
-          if [ ! -f "$IMAGE_PATH" ]; then
-             echo "::error:: Compiling GKI raw Image output does not exist before KPM patching!"
-             exit 1
-          fi
-
-          # kptools ko aapke compiled raw Image par apply karna
-          # "YourSuperKey123" ko aap apne APatch Manager wale SuperKey se replace kar sakte hain
-          ./kptools-linux -p \
-            --image "$IMAGE_PATH" \
-            --skey "YourSuperKey123" \
-            --kpimg kpimg-android \
-            --out "$IMAGE_PATH.patched"
-
-          echo "=== 3. Overwriting the original Image with the patched one ==="
-          # Image overwrite karna zaruri hai taki mkbootimg Repack ise utha sake
-          mv "$IMAGE_PATH.patched" "$IMAGE_PATH"
-          echo "✅ Standalone KPM Successfully Embedded!"
-      # ---------------------------------------------------------
-      # KPM INJECTION KHATAM
-      # ---------------------------------------------------------
-
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
           BOOT_IMG_URL: "https://www.dropbox.com/scl/fi/qph79mensvgughly2todl/boot.img?rlkey=cdexpmcm8a1h3q3unpzcu9724&st=8dj7vtxb&dl=1"
@@ -911,6 +877,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU, SuSFS & KPM Standalone. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
