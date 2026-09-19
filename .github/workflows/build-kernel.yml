@@ -759,7 +759,7 @@ jobs:
 
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
-          BOOT_IMG_URL: "https://www.dropbox.com/scl/fi/qph79mensvgughly2todl/boot.img?rlkey=cdexpmcm8a1h3q3unpzcu9724&st=8dj7vtxb&dl=1"
+          BOOT_IMG_URL: "https://www.dropbox.com/scl/fi/i0zic6jvv33utkmahjs5m/Penguinboot.img?rlkey=jgnma1lwv2fivd9ax6n47kvov&st=sc4w8074&dl=1"
         shell: bash
         run: |
           echo "=== 1. Download official STABLE gki toolchain modules ==="
