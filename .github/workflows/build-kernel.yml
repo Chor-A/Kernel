@@ -1,4 +1,4 @@
-Name: build-kernel
+name: build-kernel
 
 on:
   schedule:
