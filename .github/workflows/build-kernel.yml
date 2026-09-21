@@ -436,22 +436,24 @@ jobs:
           		s_ids = rcu_dereference(global_spoof);
           		if (likely(s_ids)) {
           			/* FAST PATH 1: Service Manager checks (Only executes when tclass is service_manager) */
-          			if (unlikely(s_ids->sm_c && tclass == s_ids->sm_c)) {
-          				u8 i;
-          				bool is_untrusted = false;
-          				for (i = 0; i < s_ids->untrusted_cnt; i++) {
-          					if (scontext->type == s_ids->untrusted_types[i]) {
-          						is_untrusted = true;
-          						break;
-          					}
-          				}
-          				if (is_untrusted) {
-          					for (i = 0; i < s_ids->lineage_cnt; i++) {
-          						if (tcontext->type == s_ids->lineage_types[i]) {
-          							avd->allowed = 0;
-          							avd->auditdeny = 0;
-          							avd->auditallow = 0;
+          			if (unlikely(__kuid_val(current_uid()) >= 10000)) {
+          				if (unlikely(s_ids->sm_c && tclass == s_ids->sm_c)) {
+          					u8 i;
+          					bool is_untrusted = false;
+          					for (i = 0; i < s_ids->untrusted_cnt; i++) {
+          						if (scontext->type == s_ids->untrusted_types[i]) {
+          							is_untrusted = true;
           							break;
+          						}
+          					}
+          					if (is_untrusted) {
+          						for (i = 0; i < s_ids->lineage_cnt; i++) {
+          							if (tcontext->type == s_ids->lineage_types[i]) {
+          								avd->allowed = 0;
+          								avd->auditdeny = 0;
+          								avd->auditallow = 0;
+          								break;
+          							}
           						}
           					}
           				}
