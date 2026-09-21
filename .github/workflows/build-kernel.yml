@@ -1,4 +1,4 @@
-name: build-kernel
+Name: build-kernel
 
 on:
   schedule:
@@ -223,18 +223,23 @@ jobs:
                 if [ -f "$patch_file" ]; then
                   echo "Applying $patch_file..."
                   sed -i 's/\r$//' "$patch_file"
+                  
+                  # === FIX: Failing the workflow if patch fails ===
                   if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file"; then
-                    echo "Applied via git apply"
+                    echo "✅ Applied via git apply"
                   elif patch -p1 -N --no-backup-if-mismatch < "$patch_file"; then
-                    echo "Applied via patch"
+                    echo "✅ Applied via patch"
                   else
-                    echo "Warning: $patch_file partially skipped or failed"
+                    echo "::error:: Failed to apply patch $patch_file ! Aborting build."
+                    exit 1
                   fi
+                  # ================================================
+
                 fi
               done
             fi
           done
-          echo "✅ All .patch files applied!"
+          echo "✅ All .patch files applied successfully!"
 
           echo "=== 3. Directly Injecting Spoof Modifications via Python (C89 Compliant) ==="
           python3 - << 'EOF'
@@ -420,7 +425,7 @@ jobs:
                   with open(array_path, "w") as f: f.write(array_content)
                   print("✅ array.c -> SPOOFED (C89 Compliant)")
 
-          # 4. Modify security/selinux/ss/services.c (HIGH PERFORMANCE / ZERO-OVERHEAD)
+          # 4. Modify security/selinux/ss/services.c (Using GFP_KERNEL)
           services_path = "security/selinux/ss/services.c"
           if os.path.exists(services_path):
               with open(services_path, "r") as f: serv_content = f.read()
@@ -429,38 +434,13 @@ jobs:
               
               av_hook_injection = r"""\1
 
-          	/* --- ULTRA-OPTIMIZED AVC HOOK (ZERO HOT-PATH STRINGS) --- */
+          	/* --- SAFED AVC BYPASS --- */
           	if (unlikely(avd->allowed) && scontext && tcontext) {
-          		struct selinux_spoof_ids *s_ids;
-          		rcu_read_lock();
-          		s_ids = rcu_dereference(global_spoof);
-          		if (likely(s_ids)) {
-          			/* FAST PATH 1: Service Manager checks (Only executes when tclass is service_manager) */
-          			if (unlikely(__kuid_val(current_uid()) >= 10000)) {
-          				if (unlikely(s_ids->sm_c && tclass == s_ids->sm_c)) {
-          					u8 i;
-          					bool is_untrusted = false;
-          					for (i = 0; i < s_ids->untrusted_cnt; i++) {
-          						if (scontext->type == s_ids->untrusted_types[i]) {
-          							is_untrusted = true;
-          							break;
-          						}
-          					}
-          					if (is_untrusted) {
-          						for (i = 0; i < s_ids->lineage_cnt; i++) {
-          							if (tcontext->type == s_ids->lineage_types[i]) {
-          								avd->allowed = 0;
-          								avd->auditdeny = 0;
-          								avd->auditallow = 0;
-          								break;
-          							}
-          						}
-          					}
-          				}
-          			}
-
-          			/* FAST PATH 2: Dirty Sepolicy / Root Bypass (UID >= 10000 check) */
-          			if (unlikely(__kuid_val(current_uid()) >= 10000)) {
+          		if (unlikely(__kuid_val(current_uid()) >= 10000)) {
+          			struct selinux_spoof_ids *s_ids;
+          			rcu_read_lock();
+          			s_ids = rcu_dereference(global_spoof);
+          			if (likely(s_ids)) {
           				bool spoof = false;
           				if (s_ids->cap_c && tclass == s_ids->cap_c) {
           					if (s_ids->fsck_t && scontext->type == s_ids->fsck_t && tcontext->type == s_ids->fsck_t) spoof = true;
@@ -475,31 +455,21 @@ jobs:
           					avd->auditallow = 0;
           				}
           			}
+          			rcu_read_unlock();
           		}
-          		rcu_read_unlock();
           	}
-          	/* -------------------------------------------------------- */"""
+          	/* ------------------------------------- */"""
 
-              if "ULTRA-OPTIMIZED AVC HOOK" not in serv_content:
+              if "SAFED AVC BYPASS" not in serv_content:
                   serv_content = re.sub(target_av_call_regex, av_hook_injection, serv_content, count=1)
                   
                   engine_marker = '#include "policycap_names.h"'
                   engine_code = (
                       '#include "policycap_names.h"\n\n'
-                      '/* --- INJECTED: SECURE SELINUX ID SPOOF ENGINE --- */\n'
+                      '/* --- INJECTED: SECURE SELINUX ID SPOOF --- */\n'
                       '#include <linux/uidgid.h>\n#include <linux/cred.h>\n'
                       '#include <linux/rcupdate.h>\n#include <linux/spinlock.h>\n\n'
-                      '#define MAX_LINEAGE_TYPES 32\n'
-                      '#define MAX_UNTRUSTED_TYPES 16\n\n'
-                      'struct selinux_spoof_ids {\n'
-                      '\tu16 cap_c, process_c, binder_c, sm_c;\n'
-                      '\tu32 fsck_t, shell_t, su_t, adbd_t, adbroot_t;\n'
-                      '\tu32 lineage_types[MAX_LINEAGE_TYPES];\n'
-                      '\tu8 lineage_cnt;\n'
-                      '\tu32 untrusted_types[MAX_UNTRUSTED_TYPES];\n'
-                      '\tu8 untrusted_cnt;\n'
-                      '\tstruct rcu_head rcu;\n'
-                      '};\n'
+                      'struct selinux_spoof_ids { u16 cap_c, process_c, binder_c; u32 fsck_t, shell_t, su_t, adbd_t, adbroot_t; struct rcu_head rcu; };\n'
                       'static struct selinux_spoof_ids __rcu *global_spoof;\n'
                       'static DEFINE_SPINLOCK(spoof_update_lock);\n\n'
                       'static void update_spoof_ids(struct selinux_policy *policy) {\n'
@@ -507,29 +477,16 @@ jobs:
                       '\tnew_ids = kzalloc(sizeof(*new_ids), GFP_KERNEL); if (!new_ids) return;\n'
                       '\tfor (i=1; i<=policy->policydb.p_classes.nprim; i++) {\n'
                       '\t\tconst char *n = sym_name(&policy->policydb, SYM_CLASSES, i - 1); if(!n) continue;\n'
-                      '\t\tif(!strcmp(n, "capability")) new_ids->cap_c=i;\n'
-                      '\t\telse if(!strcmp(n, "process")) new_ids->process_c=i;\n'
-                      '\t\telse if(!strcmp(n, "binder")) new_ids->binder_c=i;\n'
-                      '\t\telse if(!strcmp(n, "service_manager")) new_ids->sm_c=i;\n'
-                      '\t}\n'
+                      '\t\tif(!strcmp(n, "capability")) new_ids->cap_c=i;\n\t\telse if(!strcmp(n, "process")) new_ids->process_c=i;\n\t\telse if(!strcmp(n, "binder")) new_ids->binder_c=i;\n\t}\n'
                       '\tfor (i=1; i<=policy->policydb.p_types.nprim; i++) {\n'
                       '\t\tconst char *n = sym_name(&policy->policydb, SYM_TYPES, i - 1); if(!n) continue;\n'
-                      '\t\tif(!strcmp(n, "fsck_untrusted")) new_ids->fsck_t=i;\n'
-                      '\t\telse if(!strcmp(n, "shell")) new_ids->shell_t=i;\n'
-                      '\t\telse if(!strcmp(n, "su")) new_ids->su_t=i;\n'
-                      '\t\telse if(!strcmp(n, "adbd")) new_ids->adbd_t=i;\n'
-                      '\t\telse if(!strcmp(n, "adbroot")) new_ids->adbroot_t=i;\n'
-                      '\t\tif(strstr(n, "untrusted_app") && new_ids->untrusted_cnt < MAX_UNTRUSTED_TYPES)\n'
-                      '\t\t\tnew_ids->untrusted_types[new_ids->untrusted_cnt++] = i;\n'
-                      '\t\telse if((strstr(n, "lineage") || strstr(n, "profile_service")) && new_ids->lineage_cnt < MAX_LINEAGE_TYPES)\n'
-                      '\t\t\tnew_ids->lineage_types[new_ids->lineage_cnt++] = i;\n'
-                      '\t}\n'
+                      '\t\tif(!strcmp(n, "fsck_untrusted")) new_ids->fsck_t=i;\n\t\telse if(!strcmp(n, "shell")) new_ids->shell_t=i;\n\t\telse if(!strcmp(n, "su")) new_ids->su_t=i;\n'
+                      '\t\telse if(!strcmp(n, "adbd")) new_ids->adbd_t=i;\n\t\telse if(!strcmp(n, "adbroot")) new_ids->adbroot_t=i;\n\t}\n'
                       '\tspin_lock(&spoof_update_lock);\n'
                       '\told_ids = rcu_dereference_protected(global_spoof, lockdep_is_held(&spoof_update_lock));\n'
                       '\trcu_assign_pointer(global_spoof, new_ids);\n'
                       '\tspin_unlock(&spoof_update_lock);\n'
-                      '\tif (old_ids) kfree_rcu(old_ids, rcu);\n'
-                      '}\n'
+                      '\tif (old_ids) kfree_rcu(old_ids, rcu);\n}\n'
                   )
                   serv_content = serv_content.replace(engine_marker, engine_code, 1)
 
@@ -538,7 +495,7 @@ jobs:
                   serv_content = serv_content.replace(commit_marker, commit_code, 1)
 
                   with open(services_path, "w") as f: f.write(serv_content)
-                  print("✅ services.c -> ULTRA-OPTIMIZED SPOOF APPLIED")
+                  print("✅ services.c -> SPOOFED")
           EOF
           echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
