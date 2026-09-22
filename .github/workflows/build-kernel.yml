@@ -146,10 +146,24 @@ jobs:
             
             for commit in $LE9UO_COMMITS; do
               echo "-> Reverting: $commit"
-              git revert --no-commit $commit || {
-                echo "⚠️ Conflict on $commit! Aborting this specific revert to prevent build crash..."
-                git revert --abort
-              }
+              if ! git revert --no-commit "$commit"; then
+                echo "⚠️ Conflict detected on $commit, checking conflicted files..."
+                # Defconfig conflicts ko HEAD version se auto-resolve karein
+                for conf in arch/arm64/configs/gki_defconfig arch/arm64/configs/*defconfig; do
+                  if [ -f "$conf" ]; then
+                    git checkout HEAD -- "$conf" 2>/dev/null || true
+                    git add "$conf" 2>/dev/null || true
+                  fi
+                done
+
+                # Check karein agar koi aur critical file unmerged toh nahi reh gayi
+                if git diff --name-only --diff-filter=U | grep -q .; then
+                  echo "⚠️ Unresolvable code conflict on $commit! Aborting this specific revert..."
+                  git revert --abort
+                else
+                  echo "✅ Defconfig conflict auto-resolved for $commit"
+                fi
+              fi
             done
             
             git commit -m "chore: Purge le9uo commits for MGLRU" || true
@@ -235,7 +249,7 @@ jobs:
                   
                   if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file"; then
                     echo "✅ Applied via git apply"
-                  elif patch -p1 -N --no-backup-if-mismatch < "$patch_file"; then
+                  elif patch -p1 -N -F 3 --no-backup-if-mismatch < "$patch_file"; then
                     echo "✅ Applied via patch"
                   else
                     echo "::error:: Failed to apply patch $patch_file ! Aborting build."
@@ -396,7 +410,7 @@ jobs:
           					spin_lock(&spoofed_bootconfig_lock);
           					if (!spoofed_boot_config) {
           						smp_store_release(&spoofed_boot_config, tmp);
-          						b_cache = tmp; tmp = NULL;
+          						b_cache = tmp; tmp = NULL; 
           					} else { b_cache = spoofed_boot_config; }
           					spin_unlock(&spoofed_bootconfig_lock);
           					if (tmp) kfree(tmp);
