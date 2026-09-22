@@ -99,8 +99,11 @@ jobs:
         run: |
           mkdir -p work/neutron-clang
           cd work/neutron-clang
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
+          curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
+          bash antman -S
+          bash antman --patch=glibc
           echo "$(pwd)/bin" >> $GITHUB_PATH
+          
 
       - name: Restore ccache cache
         if: ${{ inputs.ccache }}
