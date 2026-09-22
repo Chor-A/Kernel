@@ -32,6 +32,7 @@ on:
         options:
           - clang 19
           - clang 14
+          - neutron clang
         default: "clang 19"
       defconfig_fragment_exclude:
         description: 'Defconfig fragments to exclude'
@@ -66,7 +67,7 @@ jobs:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
       KERNEL_COMMIT: ${{ inputs.kernel_commit }}
-      CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst"}')[inputs.clang_version] }}
+      CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst","neutron clang":"neutron-clang"}')[inputs.clang_version] }}
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
       APPEND_CONFIG: ${{ inputs.append_config }}
@@ -92,6 +93,14 @@ jobs:
           git config --global --add safe.directory "*"
           git config --global user.email "Antonio_Nelson@proton.me"
           git config --global user.name "Chor-A"
+
+      - name: Setup Neutron Clang via Antman
+        if: ${{ inputs.clang_version == 'neutron clang' }}
+        run: |
+          mkdir -p work/neutron-clang
+          cd work/neutron-clang
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
+          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Restore ccache cache
         if: ${{ inputs.ccache }}
@@ -224,7 +233,6 @@ jobs:
                   echo "Applying $patch_file..."
                   sed -i 's/\r$//' "$patch_file"
                   
-                  # === FIX: Failing the workflow if patch fails ===
                   if git apply --verbose --ignore-whitespace --whitespace=nowarn "$patch_file"; then
                     echo "✅ Applied via git apply"
                   elif patch -p1 -N --no-backup-if-mismatch < "$patch_file"; then
@@ -233,7 +241,6 @@ jobs:
                     echo "::error:: Failed to apply patch $patch_file ! Aborting build."
                     exit 1
                   fi
-                  # ================================================
 
                 fi
               done
@@ -504,19 +511,15 @@ jobs:
           cd work/common
           echo "=== 4. Setting up ReSukiSU ==="
           
-          # We use the official URL initially for consistency in your workflow
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -
 
-          # Base ReSukiSU & Core Flags
           sed -i 's/CONFIG_KSU=m/CONFIG_KSU=y/g' arch/arm64/configs/gki_defconfig || true
           echo "CONFIG_KSU=y" >> arch/arm64/configs/gki_defconfig
           
-          # --- ReSukiSU Exclusive Features (Inline Hooks required for SuSFS integration) ---
           echo "CONFIG_KSU_TOOLKIT_SUPPORT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SENTINEL=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_INLINE_HOOK=y" >> arch/arm64/configs/gki_defconfig
           
-          # --- Extra Stealth & Cleanup ---
           echo "CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_DEBUG=n" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUCOMPAT=n" >> arch/arm64/configs/gki_defconfig
@@ -526,11 +529,9 @@ jobs:
           echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/gki_defconfig
 
-          # --- Core KALLSYMS Flags ---
           echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/gki_defconfig
 
-          # SuSFS Integration Flags
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
@@ -582,22 +583,16 @@ jobs:
           #include <linux/security.h>
           #include "audit.h"
 
-          /*
-           * this mark lives on the parent directory of the inode in question.
-           * but dev, ino, and path are about the child
-           */
           struct audit_fsnotify_mark {
-          	dev_t dev;		/* associated superblock device */
-          	unsigned long ino;	/* associated inode number */
-          	char *path;		/* insertion path */
-          	struct fsnotify_mark mark; /* fsnotify mark on the inode */
+          	dev_t dev;		
+          	unsigned long ino;	
+          	char *path;		
+          	struct fsnotify_mark mark; 
           	struct audit_krule *rule;
           };
 
-          /* fsnotify handle. */
           static struct fsnotify_group *audit_fsnotify_group;
 
-          /* fsnotify events we care about. */
           #define AUDIT_FS_EVENTS (FS_MOVE | FS_CREATE | FS_DELETE | FS_DELETE_SELF |\
           			 FS_MOVE_SELF)
 
@@ -646,7 +641,7 @@ jobs:
 
           	dentry = kern_path_parent(pathname, &path);
           	if (IS_ERR(dentry))
-          		return ERR_CAST(dentry); /* returning an error */
+          		return ERR_CAST(dentry); 
 
           	audit_mark = kzalloc(sizeof(*audit_mark), GFP_KERNEL);
           	if (unlikely(!audit_mark)) {
@@ -716,7 +711,6 @@ jobs:
           	audit_del_rule(entry);
           }
 
-          /* Update mark data in audit rules based on fsnotify events. */
           static int audit_mark_handle_event(struct fsnotify_mark *inode_mark, u32 mask,
           				   struct inode *inode, struct inode *dir,
           				   const struct qstr *dname, u32 cookie)
@@ -771,7 +765,6 @@ jobs:
           mkdir -p repack/extracted
           mkdir -p repack/output
           
-          # Clone full toolchains to fix ModuleNotFoundError
           git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg repack/mkbootimg_tool
           git clone --depth=1 https://android.googlesource.com/platform/external/avb repack/avb_tool
 
