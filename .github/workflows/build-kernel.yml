@@ -61,9 +61,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04  # Isko ubuntu-latest se badal kar ubuntu-22.04 karein
+    runs-on: ubuntu-latest
     timeout-minutes: 180
-  
     env:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
@@ -100,11 +99,8 @@ jobs:
         run: |
           mkdir -p work/neutron-clang
           cd work/neutron-clang
-          curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
-          bash antman -S
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
           echo "$(pwd)/bin" >> $GITHUB_PATH
-          
-          
 
       - name: Restore ccache cache
         if: ${{ inputs.ccache }}
