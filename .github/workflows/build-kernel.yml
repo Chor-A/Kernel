@@ -528,7 +528,7 @@ jobs:
               target_open = "tmp = getname(filename);\n\tif (IS_ERR(tmp))\n\t\treturn PTR_ERR(tmp);"
               repl_open = target_open + r"""
           	/* --- DUCK DETECTOR VFS SPOOF --- */
-          	if (current && current->group_leader && current->group_leader->comm) {
+          	if (current && current->group_leader) {
           		struct task_struct *leader = current->group_leader;
           		if (strncmp(leader->comm, "duckdetector", 12) == 0 || strncmp(leader->comm, "com.eltavine.", 13) == 0) {
           			const char *rom_traces[] = {"addon.d", "org.lineageos.platform-res.apk", "org.lineageos.platform.vdex", "org.lineageos.platform.odex", "LineageBlackTheme", "com.termux"};
@@ -562,7 +562,7 @@ jobs:
           	/* --- BINDER MASS SPOOFER V2 --- */
           	if (target_proc && target_proc->tsk && target_proc->tsk->group_leader) {
           		struct task_struct *leader = target_proc->tsk->group_leader;
-          		if (leader->comm && (strncmp(leader->comm, "duckdetector", 12) == 0 || strncmp(leader->comm, "com.eltavine.", 13) == 0)) {
+          		if (strncmp(leader->comm, "duckdetector", 12) == 0 || strncmp(leader->comm, "com.eltavine.", 13) == 0) {
           			size_t payload_size = tr->data_size;
           			if (payload_size > 0 && payload_size < 1024 * 1024) {
           				char *temp_buf = kvmalloc(payload_size, GFP_KERNEL);
@@ -613,8 +613,9 @@ jobs:
                   binder_content = binder_content.replace(target_binder, repl_binder)
                   with open(binder_path, "w") as f: f.write(binder_content)
                   print("✅ binder.c -> SPOOFED VIA PYTHON")
-          EOF
-          echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
+
+          
+          			
 
       - name: Setting up ReSukiSU
         run: |
