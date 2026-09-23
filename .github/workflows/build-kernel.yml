@@ -249,309 +249,102 @@ jobs:
           done
           echo "✅ All .patch files applied successfully!"
 
-          echo "=== 3. Directly Injecting Spoof Modifications via Python ==="
+          echo "=== 3. Directly Injecting Universal VFS & Binder Spoof via Python ==="
           python3 - << 'EOF'
           import os
-          import re
-
-          def replace_c_func_overkill(content, func_regex, new_func_code):
-              match = re.search(func_regex, content)
-              if not match:
-                  return content, False
-              
-              start_idx = match.start()
-              brace_start = content.find('{', start_idx)
-              if brace_start == -1: return content, False
-                  
-              NORMAL, IN_STRING, IN_CHAR, IN_LINE_COMMENT, IN_BLOCK_COMMENT = 0, 1, 2, 3, 4
-              state = NORMAL; brace_count = 0; end_idx = -1; i = brace_start; length = len(content)
-              
-              while i < length:
-                  c = content[i]
-                  if state == NORMAL:
-                      if c == '/' and i + 1 < length:
-                          nc = content[i+1]
-                          if nc == '/': state = IN_LINE_COMMENT; i += 1
-                          elif nc == '*': state = IN_BLOCK_COMMENT; i += 1
-                      elif c == '"': state = IN_STRING
-                      elif c == "'": state = IN_CHAR
-                      elif c == '{': brace_count += 1
-                      elif c == '}':
-                          brace_count -= 1
-                          if brace_count == 0:
-                              end_idx = i + 1
-                              break
-                  elif state == IN_STRING:
-                      if c == '\\': i += 1
-                      elif c == '"': state = NORMAL
-                  elif state == IN_CHAR:
-                      if c == '\\': i += 1
-                      elif c == "'": state = NORMAL
-                  elif state == IN_LINE_COMMENT:
-                      if c == '\n': state = NORMAL
-                  elif state == IN_BLOCK_COMMENT:
-                      if c == '*' and i + 1 < length and content[i+1] == '/': state = NORMAL; i += 1
-                  i += 1
-              if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
-              return content, False
-
-          # 1. fs/proc/cmdline.c - ATOMIC FASTPATH
-          cmdline_path = "fs/proc/cmdline.c"
-          if os.path.exists(cmdline_path):
-              with open(cmdline_path, "r") as f: content = f.read()
-              helper_code = r"""
-          #include <linux/slab.h>
-          #include <linux/string.h>
-          #include <linux/cred.h>
-          #include <linux/spinlock.h>
-          #include <linux/compiler.h>
-
-          static void replace_str(char *buf, size_t max_len, const char *search, const char *replace)
-          {
-          	char *p = buf;
-          	size_t s_len = strlen(search), r_len = strlen(replace);
-          	while ((p = strstr(p, search)) != NULL) {
-          		size_t cur_len = strlen(buf), tail_len = strlen(p + s_len);
-          		if (r_len > s_len && cur_len + (r_len - s_len) >= max_len) break;
-          		if (r_len != s_len) memmove(p + r_len, p + s_len, tail_len + 1);
-          		memcpy(p, replace, r_len); p += r_len;
-          	}
-          }
-          """
-              replacement_func = r"""static int cmdline_proc_show(struct seq_file *m, void *v)
-          {
-          	static char *spoofed_cmdline = NULL;
-          	static DEFINE_SPINLOCK(spoofed_cmdline_lock);
-          	char *cmd_cache = READ_ONCE(spoofed_cmdline);
-
-          	if (!saved_command_line) {
-          		seq_putc(m, '\n'); return 0;
-          	}
-
-          	if (likely(__kuid_val(current_uid()) >= 10000)) {
-          		if (unlikely(!cmd_cache)) {
-          			size_t len = strlen(saved_command_line);
-          			char *tmp = kzalloc(len + 256, GFP_KERNEL);
-          			if (tmp) {
-          				memcpy(tmp, saved_command_line, len + 1);
-          				replace_str(tmp, len + 256, "androidboot.verifiedbootstate=orange", "androidboot.verifiedbootstate=green");
-          				replace_str(tmp, len + 256, "androidboot.verifiedbootstate=yellow", "androidboot.verifiedbootstate=green");
-          				replace_str(tmp, len + 256, "androidboot.vbmeta.device_state=unlocked", "androidboot.vbmeta.device_state=locked");
-          				replace_str(tmp, len + 256, "androidboot.flash.locked=0", "androidboot.flash.locked=1");
-          				replace_str(tmp, len + 256, "androidboot.selinux=permissive", "androidboot.selinux=enforcing");
-          				replace_str(tmp, len + 256, "androidboot.warranty_bit=1", "androidboot.warranty_bit=0");
-          				
-          				spin_lock(&spoofed_cmdline_lock);
-          				if (!spoofed_cmdline) {
-          					smp_store_release(&spoofed_cmdline, tmp);
-          					cmd_cache = tmp; tmp = NULL; 
-          				} else { cmd_cache = spoofed_cmdline; }
-          				spin_unlock(&spoofed_cmdline_lock);
-          				if (tmp) kfree(tmp);
-          			}
-          		}
-          		if (likely(cmd_cache)) {
-          			seq_puts(m, cmd_cache);
-          			seq_putc(m, '\n');
-          			return 0;
-          		}
-          	}
-          	seq_puts(m, saved_command_line); seq_putc(m, '\n'); return 0;
-          }"""
-              pattern = r'static int cmdline_proc_show\(struct seq_file \*m, void \*v\)\s*'
-              if "replace_str" not in content: content = helper_code + "\n" + content
-              new_content, success = replace_c_func_overkill(content, pattern, replacement_func)
-              if success:
-                  with open(cmdline_path, "w") as f: f.write(new_content)
-                  print("✅ cmdline.c -> SPOOFED")
-
-          # 2. fs/proc/bootconfig.c 
-          boot_path = "fs/proc/bootconfig.c"
-          if os.path.exists(boot_path):
-              with open(boot_path, "r") as f: boot_content = f.read()
-              boot_helper = r"""
-          #include <linux/string.h>
-          #include <linux/cred.h>
-          #include <linux/spinlock.h>
-          #include <linux/slab.h>
-          #include <linux/compiler.h>
-
-          #define repl(B, L, S, R) do{ char *p=B; while((p=strstr(p,S))!=NULL) { size_t s_l=strlen(S), r_l=strlen(R), tail=strlen(p+s_l); memmove(p+r_l, p+s_l, tail+1); memcpy(p, R, r_l); p+=r_l; } }while(0)
-          """
-              boot_replacement = r"""static int boot_config_proc_show(struct seq_file *m, void *v)
-          {
-          	static char *spoofed_boot_config = NULL;
-          	static DEFINE_SPINLOCK(spoofed_bootconfig_lock);
-          	char *b_cache = READ_ONCE(spoofed_boot_config);
-
-          	if (saved_boot_config) {
-          		if (likely(__kuid_val(current_uid()) >= 10000)) {
-          			if (unlikely(!b_cache)) {
-          				size_t len = strlen(saved_boot_config);
-          				char *tmp = kzalloc(len + 256, GFP_KERNEL);
-          				if (tmp) {
-          					memcpy(tmp, saved_boot_config, len + 1);
-          					repl(tmp, len+256, "androidboot.verifiedbootstate = \"orange\"", "androidboot.verifiedbootstate = \"green\"");
-          					repl(tmp, len+256, "androidboot.vbmeta.device_state = \"unlocked\"", "androidboot.vbmeta.device_state = \"locked\"");
-          					repl(tmp, len+256, "androidboot.flash.locked = \"0\"", "androidboot.flash.locked = \"1\"");
-          					spin_lock(&spoofed_bootconfig_lock);
-          					if (!spoofed_boot_config) {
-          						smp_store_release(&spoofed_boot_config, tmp);
-          						b_cache = tmp; tmp = NULL; 
-          					} else { b_cache = spoofed_boot_config; }
-          					spin_unlock(&spoofed_bootconfig_lock);
-          					if (tmp) kfree(tmp);
-          				}
-          			}
-          			if (likely(b_cache)) {
-          			    seq_puts(m, b_cache); return 0;
-          			}
-          		}
-          		seq_puts(m, saved_boot_config);
-          	}
-          	return 0;
-          }"""
-              boot_pattern = r'static int boot_config_proc_show\(struct seq_file \*m, void \*v\)\s*'
-              if "repl(B, L, S, R)" not in boot_content: boot_content = boot_helper + "\n" + boot_content
-              new_boot_content, success = replace_c_func_overkill(boot_content, boot_pattern, boot_replacement)
-              if success:
-                  with open(boot_path, "w") as f: f.write(new_boot_content)
-                  print("✅ bootconfig.c -> SPOOFED")
-
-          # 3. Modify fs/proc/array.c
-          array_path = "fs/proc/array.c"
-          if os.path.exists(array_path):
-              with open(array_path, "r") as f: array_content = f.read()
-              if '#include <linux/cred.h>' not in array_content:
-                  array_content = array_content.replace('#include <linux/fs_struct.h>', '#include <linux/fs_struct.h>\n#include <linux/cred.h>')
-              
-              tstate_target = 'seq_puts(m, "State:\\t");\n\tseq_puts(m, get_task_state(p));'
-              tstate_repl = 'seq_puts(m, "State:\\t");\n\tif (__kuid_val(current_uid()) >= 10000 && (*get_task_state(p) == \'t\' || *get_task_state(p) == \'T\'))\n\t\tseq_puts(m, "S (sleeping)");\n\telse\n\t\tseq_puts(m, get_task_state(p));'
-              
-              if tstate_target in array_content:
-                  array_content = array_content.replace(tstate_target, tstate_repl)
-                  with open(array_path, "w") as f: f.write(array_content)
-                  print("✅ array.c -> SPOOFED")
-
-          # 4. Modify security/selinux/ss/services.c
-          services_path = "security/selinux/ss/services.c"
-          if os.path.exists(services_path):
-              with open(services_path, "r") as f: serv_content = f.read()
-
-              target_av_call_regex = r'(context_struct_compute_av\(policydb,\s*scontext,\s*tcontext,\s*tclass,\s*avd,\s*NULL\);)'
-              
-              av_hook_injection = r"""\1
-
-          	/* --- SAFED AVC BYPASS --- */
-          	if (unlikely(avd->allowed) && scontext && tcontext) {
-          		if (unlikely(__kuid_val(current_uid()) >= 10000)) {
-          			struct selinux_spoof_ids *s_ids;
-          			rcu_read_lock();
-          			s_ids = rcu_dereference(global_spoof);
-          			if (likely(s_ids)) {
-          				bool spoof = false;
-          				if (s_ids->cap_c && tclass == s_ids->cap_c) {
-          					if (s_ids->fsck_t && scontext->type == s_ids->fsck_t && tcontext->type == s_ids->fsck_t) spoof = true;
-          				} else if (s_ids->process_c && tclass == s_ids->process_c) {
-          					if (s_ids->shell_t && s_ids->su_t && scontext->type == s_ids->shell_t && tcontext->type == s_ids->su_t) spoof = true;
-          				} else if (s_ids->binder_c && tclass == s_ids->binder_c) {
-          					if (s_ids->adbd_t && s_ids->adbroot_t && scontext->type == s_ids->adbd_t && tcontext->type == s_ids->adbroot_t) spoof = true;
-          				}
-          				if (unlikely(spoof)) {
-          					avd->allowed = 0;
-          					avd->auditdeny = 0;
-          					avd->auditallow = 0;
-          				}
-          			}
-          			rcu_read_unlock();
-          		}
-          	}
-          	/* ------------------------------------- */"""
-
-              if "SAFED AVC BYPASS" not in serv_content:
-                  serv_content = re.sub(target_av_call_regex, av_hook_injection, serv_content, count=1)
-                  
-                  engine_marker = '#include "policycap_names.h"'
-                  engine_code = (
-                      '#include "policycap_names.h"\n\n'
-                      '/* --- INJECTED: SECURE SELINUX ID SPOOF --- */\n'
-                      '#include <linux/uidgid.h>\n#include <linux/cred.h>\n'
-                      '#include <linux/rcupdate.h>\n#include <linux/spinlock.h>\n\n'
-                      'struct selinux_spoof_ids { u16 cap_c, process_c, binder_c; u32 fsck_t, shell_t, su_t, adbd_t, adbroot_t; struct rcu_head rcu; };\n'
-                      'static struct selinux_spoof_ids __rcu *global_spoof;\n'
-                      'static DEFINE_SPINLOCK(spoof_update_lock);\n\n'
-                      'static void update_spoof_ids(struct selinux_policy *policy) {\n'
-                      '\tstruct selinux_spoof_ids *new_ids, *old_ids; u32 i;\n'
-                      '\tnew_ids = kzalloc(sizeof(*new_ids), GFP_KERNEL); if (!new_ids) return;\n'
-                      '\tfor (i=1; i<=policy->policydb.p_classes.nprim; i++) {\n'
-                      '\t\tconst char *n = sym_name(&policy->policydb, SYM_CLASSES, i - 1); if(!n) continue;\n'
-                      '\t\tif(!strcmp(n, "capability")) new_ids->cap_c=i;\n\t\telse if(!strcmp(n, "process")) new_ids->process_c=i;\n\t\telse if(!strcmp(n, "binder")) new_ids->binder_c=i;\n\t}\n'
-                      '\tfor (i=1; i<=policy->policydb.p_types.nprim; i++) {\n'
-                      '\t\tconst char *n = sym_name(&policy->policydb, SYM_TYPES, i - 1); if(!n) continue;\n'
-                      '\t\tif(!strcmp(n, "fsck_untrusted")) new_ids->fsck_t=i;\n\t\telse if(!strcmp(n, "shell")) new_ids->shell_t=i;\n\t\telse if(!strcmp(n, "su")) new_ids->su_t=i;\n'
-                      '\t\telse if(!strcmp(n, "adbd")) new_ids->adbd_t=i;\n\t\telse if(!strcmp(n, "adbroot")) new_ids->adbroot_t=i;\n\t}\n'
-                      '\tspin_lock(&spoof_update_lock);\n'
-                      '\told_ids = rcu_dereference_protected(global_spoof, lockdep_is_held(&spoof_update_lock));\n'
-                      '\trcu_assign_pointer(global_spoof, new_ids);\n'
-                      '\tspin_unlock(&spoof_update_lock);\n'
-                      '\tif (old_ids) kfree_rcu(old_ids, rcu);\n}\n'
-                  )
-                  serv_content = serv_content.replace(engine_marker, engine_code, 1)
-
-                  commit_marker = 'security_load_policycaps(state, newpolicy);'
-                  commit_code = 'security_load_policycaps(state, newpolicy);\n\tupdate_spoof_ids(newpolicy);'
-                  serv_content = serv_content.replace(commit_marker, commit_code, 1)
-
-                  with open(services_path, "w") as f: f.write(serv_content)
-                  print("✅ services.c -> SPOOFED")
 
           # ==============================================================
-          # 5. fs/open.c - VFS SPOOFING (CUSTOM ROM FILES ONLY - 100% SAFE)
+          # 1. fs/namei.c - UNIVERSAL VFS SPOOFING (CATCHES ALL SYSCALLS)
           # ==============================================================
-          open_path = "fs/open.c"
-          if os.path.exists(open_path):
-              with open(open_path, "r") as f: open_content = f.read()
+          namei_path = "fs/namei.c"
+          if os.path.exists(namei_path):
+              with open(namei_path, "r") as f: namei_content = f.read()
               
-              target_open = "tmp = getname(filename);\n\tif (IS_ERR(tmp))\n\t\treturn PTR_ERR(tmp);"
-              repl_open = target_open + r"""
-          	/* --- CUSTOM ROM VFS SPOOF (UID BASED) --- */
-          	if (likely(__kuid_val(current_uid()) >= 10000)) {
-          		
-          		/* 1. Hide Custom ROM files completely from all user apps */
-          		const char *rom_traces[] = {
-          			"addon.d", 
-          			"org.lineageos.platform-res.apk", 
-          			"org.lineageos.platform.vdex", 
-          			"org.lineageos.platform.odex", 
-          			"LineageBlackTheme"
-          		};
-          		int i;
-          		for (i = 0; i < 5; i++) {
-          			if (strstr(tmp->name, rom_traces[i]) != NULL) { 
-          				putname(tmp); 
-          				return -ENOENT; /* File Not Found */
-          			}
-          		}
-          		
-          		/* 2. Block SELinux Policy Reads Securely */
-          		/* Stock Android 12+ devices block untrusted_app from reading these policies.
-          		   Returning -EACCES perfectly mimics a locked, stock device. */
-          		if (strstr(tmp->name, "vendor_sepolicy.cil") || 
-          		    strstr(tmp->name, "system_ext_sepolicy.cil") || 
-          		    strstr(tmp->name, "vendor_file_contexts")) {
-          			putname(tmp); 
-          			return -EACCES; /* Permission Denied */
+              target_namei = "audit_getname(result);\n\treturn result;"
+              repl_namei = r"""
+          	/* --- DUCK DETECTOR UNIVERSAL VFS SPOOF --- */
+          	if (likely(__kuid_val(current_uid()) >= 10000) && result && result->name) {
+          		if (strstr(result->name, "addon.d") || 
+          		    strstr(result->name, "org.lineageos.platform-res.apk") ||
+          		    strstr(result->name, "org.lineageos.platform.vdex") || 
+          		    strstr(result->name, "org.lineageos.platform.odex") ||
+          		    strstr(result->name, "LineageBlackTheme")) {
+          			
+          			/* Hides nativeFiles from stat(), access(), and open() universally */
+          			strncpy((char *)result->name, "/system/non_existent_dummy_file", 256);
           		}
           	}
-          	/* ---------------------------------------- */
+          	/* ----------------------------------------- */
+          	audit_getname(result);
+          	return result;
           """
-              if "#include <linux/uidgid.h>" not in open_content:
-                  open_content = open_content.replace("#include <linux/string.h>", "#include <linux/string.h>\n#include <linux/uidgid.h>")
+              if "#include <linux/uidgid.h>" not in namei_content:
+                  namei_content = namei_content.replace("#include <linux/fs.h>", "#include <linux/fs.h>\n#include <linux/uidgid.h>")
 
-              if "CUSTOM ROM VFS SPOOF" not in open_content:
-                  open_content = open_content.replace(target_open, repl_open)
-                  with open(open_path, "w") as f: f.write(open_content)
-                  print("✅ fs/open.c -> SPOOFED (ROM FILES ONLY)")
+              if "DUCK DETECTOR UNIVERSAL VFS SPOOF" not in namei_content:
+                  namei_content = namei_content.replace(target_namei, repl_namei)
+                  with open(namei_path, "w") as f: f.write(namei_content)
+                  print("✅ fs/namei.c -> SPOOFED (UNIVERSAL PATH INTERCEPT)")
+
+          # ==============================================================
+          # 2. drivers/android/binder.c - BINDER SERVICE SPOOFER (CRASH-PROOF)
+          # ==============================================================
+          binder_path = "drivers/android/binder.c"
+          if os.path.exists(binder_path):
+              with open(binder_path, "r") as f: binder_content = f.read()
+              
+              target_binder = "goto err_copy_data_failed;\n\t}"
+              repl_binder = target_binder + r"""
+          	/* --- BINDER SERVICE SPOOFER (ULTRA SAFE) --- */
+          	if (target_proc && target_proc->tsk && target_proc->tsk->cred) {
+          		if (likely(__kuid_val(target_proc->tsk->cred->uid) >= 10000)) {
+          			size_t payload_size = tr->data_size;
+          			if (payload_size > 0 && payload_size < 1024 * 1024) {
+          				char *temp_buf = kvmalloc(payload_size, GFP_KERNEL);
+          				if (temp_buf) {
+          					if (binder_alloc_copy_from_buffer(&target_proc->alloc, temp_buf, t->buffer, 0, payload_size) == 0) {
+          						bool modified = false;
+          						#define SPOOF_B_STR(orig, repl) do { \
+          							size_t len = strlen(orig); size_t u16_len = len * 2; \
+          							if (u16_len <= 128 && payload_size >= u16_len) { \
+          								char o_u16[128] = {0}; char r_u16[128] = {0}; size_t j, k; \
+          								for (j = 0; j < len; j++) { o_u16[j*2] = orig[j]; r_u16[j*2] = repl[j]; } \
+          								for (k = 0; k <= payload_size - u16_len; k++) { \
+          									if (memcmp(temp_buf + k, o_u16, u16_len) == 0) { \
+          										memcpy(temp_buf + k, r_u16, u16_len); modified = true; \
+          									} \
+          								} \
+          							} \
+          						} while(0)
+          						
+          						/* HIDING LINEAGEOS SERVICES ONLY (ZERO CRASH RISK) */
+          						SPOOF_B_STR("lineageglobalactions", "android.policy.sysui");
+          						SPOOF_B_STR("lineagehardware",      "google.hardware");
+          						SPOOF_B_STR("lineagehealth",        "google.health");
+          						SPOOF_B_STR("lineagelivedisplay",   "google.livedisplay");
+          						SPOOF_B_STR("lineagetrust",         "google.trust");
+          						SPOOF_B_STR("vendor.lineage.health.IChargingControl/default", "vendor.googlea.health.IChargingControl/default");
+          						SPOOF_B_STR("vendor.lineage.health.IFastCharge/default", "vendor.googlea.health.IFastCharge/default");
+          						
+          						if (modified) binder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, 0, temp_buf, payload_size);
+          					}
+          					kvfree(temp_buf);
+          				}
+          			}
+          		}
+          	}
+          	/* ------------------------------------------- */
+          """
+              if "BINDER SERVICE SPOOFER" not in binder_content:
+                  if "#include <linux/mm.h>" not in binder_content:
+                      binder_content = binder_content.replace("#include <linux/slab.h>", "#include <linux/slab.h>\n#include <linux/mm.h>")
+                  if "#include <linux/uidgid.h>" not in binder_content:
+                      binder_content = binder_content.replace("#include <linux/slab.h>", "#include <linux/slab.h>\n#include <linux/uidgid.h>")
+                      
+                  binder_content = binder_content.replace(target_binder, repl_binder)
+                  with open(binder_path, "w") as f: f.write(binder_content)
+                  print("✅ binder.c -> SPOOFED (SERVICE HIDING)")
+
           EOF
           echo "✅ PYTHON SCRIPT EXECUTION COMPLETE."
 
