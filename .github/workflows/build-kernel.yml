@@ -505,49 +505,8 @@ jobs:
                   with open(services_path, "w") as f: f.write(serv_content)
                   print("✅ services.c -> SPOOFED")
 
-          echo "=== 3. Directly Injecting Spoof Modifications via Python (Ultra Safe) ==="
-          python3 - << 'EOF'
-          import os
-          import re
-
-          def replace_c_func_overkill(content, func_regex, new_func_code):
-              match = re.search(func_regex, content)
-              if not match: return content, False
-              start_idx = match.start()
-              brace_start = content.find('{', start_idx)
-              if brace_start == -1: return content, False
-              
-              NORMAL, IN_STRING, IN_CHAR, IN_LINE_COMMENT, IN_BLOCK_COMMENT = 0, 1, 2, 3, 4
-              state = NORMAL; brace_count = 0; end_idx = -1; i = brace_start; length = len(content)
-              while i < length:
-                  c = content[i]
-                  if state == NORMAL:
-                      if c == '/' and i + 1 < length:
-                          nc = content[i+1]
-                          if nc == '/': state = IN_LINE_COMMENT; i += 1
-                          elif nc == '*': state = IN_BLOCK_COMMENT; i += 1
-                      elif c == '"': state = IN_STRING
-                      elif c == "'": state = IN_CHAR
-                      elif c == '{': brace_count += 1
-                      elif c == '}':
-                          brace_count -= 1
-                          if brace_count == 0: end_idx = i + 1; break
-                  elif state == IN_STRING:
-                      if c == '\\': i += 1
-                      elif c == '"': state = NORMAL
-                  elif state == IN_CHAR:
-                      if c == '\\': i += 1
-                      elif c == "'": state = NORMAL
-                  elif state == IN_LINE_COMMENT:
-                      if c == '\n': state = NORMAL
-                  elif state == IN_BLOCK_COMMENT:
-                      if c == '*' and i + 1 < length and content[i+1] == '/': state = NORMAL; i += 1
-                  i += 1
-              if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
-              return content, False
-
           # ==============================================================
-          # 1. fs/open.c - VFS SPOOFING (ULTRA SAFE - NO BUFFER OVERFLOW)
+          # 5. fs/open.c - VFS SPOOFING (EXACT PACKAGE MATCH)
           # ==============================================================
           open_path = "fs/open.c"
           if os.path.exists(open_path):
@@ -555,25 +514,25 @@ jobs:
               
               target_open = "tmp = getname(filename);\n\tif (IS_ERR(tmp))\n\t\treturn PTR_ERR(tmp);"
               repl_open = target_open + r"""
-          	/* --- DUCK DETECTOR VFS SPOOF (ULTRA SAFE) --- */
+          	/* --- DUCK DETECTOR VFS SPOOF (PACKAGE MATCH) --- */
           	if (current && current->group_leader) {
-          		if (strncmp(current->group_leader->comm, "duckdetector", 12) == 0 || 
-          		    strncmp(current->group_leader->comm, "com.eltavine.", 13) == 0) {
+          		char *comm = current->group_leader->comm;
+          		/* Target specifically the truncated package name of Duck Detector (15 chars) */
+          		if (strncmp(comm, "com.eltavine.du", 15) == 0 || strncmp(comm, "com.eltavine.", 13) == 0) {
           			
-          			/* 1. Hide Custom ROM files */
           			const char *rom_traces[] = {
           				"addon.d", "org.lineageos.platform-res.apk", 
           				"org.lineageos.platform.vdex", "org.lineageos.platform.odex", 
           				"LineageBlackTheme", "/data/data/com.termux", "/data/user/0/com.termux"
           			};
-          			for (int i = 0; i < 7; i++) {
+          			int i;
+          			for (i = 0; i < 7; i++) {
           				if (strstr(tmp->name, rom_traces[i]) != NULL) { 
           					putname(tmp); return -ENOENT; 
           				}
           			}
           			
-          			/* 2. Safely Block Policy Reads (Returns Permission Denied) */
-          			/* Duck detector expects -EACCES on stock devices for vendor policies */
+          			/* Safely Block Policy Reads (Returns Permission Denied) */
           			if (strstr(tmp->name, "vendor_sepolicy.cil") || 
           			    strstr(tmp->name, "system_ext_sepolicy.cil") || 
           			    strstr(tmp->name, "vendor_file_contexts")) {
@@ -586,10 +545,10 @@ jobs:
               if "DUCK DETECTOR VFS SPOOF" not in open_content:
                   open_content = open_content.replace(target_open, repl_open)
                   with open(open_path, "w") as f: f.write(open_content)
-                  print("✅ fs/open.c -> SPOOFED (SAFE MODE)")
+                  print("✅ fs/open.c -> SPOOFED VIA PYTHON (PACKAGE MATCH)")
 
           # ==============================================================
-          # 2. drivers/android/binder.c - BINDER MASS SPOOFER (ULTRA SAFE)
+          # 6. drivers/android/binder.c - BINDER MASS SPOOFER (EXACT PACKAGE MATCH)
           # ==============================================================
           binder_path = "drivers/android/binder.c"
           if os.path.exists(binder_path):
@@ -597,11 +556,12 @@ jobs:
               
               target_binder = "goto err_copy_data_failed;\n\t}"
               repl_binder = target_binder + r"""
-          	/* --- BINDER MASS SPOOFER (ULTRA SAFE) --- */
+          	/* --- BINDER MASS SPOOFER (PACKAGE MATCH) --- */
           	if (target_proc && target_proc->tsk && target_proc->tsk->group_leader) {
-          		/* ONLY trigger for Duck Detector process */
-          		if (strncmp(target_proc->tsk->group_leader->comm, "duckdetector", 12) == 0 || 
-          		    strncmp(target_proc->tsk->group_leader->comm, "com.eltavine.", 13) == 0) {
+          		char *comm = target_proc->tsk->group_leader->comm;
+          		
+          		/* ONLY trigger if the receiving app matches Duck Detector's package prefix */
+          		if (strncmp(comm, "com.eltavine.du", 15) == 0 || strncmp(comm, "com.eltavine.", 13) == 0) {
           			
           			size_t payload_size = tr->data_size;
           			if (payload_size > 0 && payload_size < 1024 * 1024) {
@@ -612,9 +572,9 @@ jobs:
           						#define SPOOF_B_STR(orig, repl) do { \
           							size_t len = strlen(orig); size_t u16_len = len * 2; \
           							if (u16_len <= 128 && payload_size >= u16_len) { \
-          								char o_u16[128] = {0}; char r_u16[128] = {0}; \
-          								for (size_t j = 0; j < len; j++) { o_u16[j*2] = orig[j]; r_u16[j*2] = repl[j]; } \
-          								for (size_t k = 0; k <= payload_size - u16_len; k++) { \
+          								char o_u16[128] = {0}; char r_u16[128] = {0}; size_t j, k; \
+          								for (j = 0; j < len; j++) { o_u16[j*2] = orig[j]; r_u16[j*2] = repl[j]; } \
+          								for (k = 0; k <= payload_size - u16_len; k++) { \
           									if (memcmp(temp_buf + k, o_u16, u16_len) == 0) { \
           										memcpy(temp_buf + k, r_u16, u16_len); modified = true; \
           									} \
@@ -622,7 +582,11 @@ jobs:
           							} \
           						} while(0)
           						
-          						/* No generic strings like 'profile' used here! */
+          						/* 1. Spoofing Custom Repackaged LSPosed */
+          						SPOOF_B_STR("org.matrix.vector.daemon", "com.android.printspooler");
+          						SPOOF_B_STR("org.matrix.vector.manager", "com.android.sharedstorage");
+          						
+          						/* 2. Spoofing Detected Custom ROM Packages */
           						SPOOF_B_STR("org.lineageos.lineageparts", "com.android.settings.safex");
           						SPOOF_B_STR("org.lineageos.profiles",     "com.android.safesystem");
           						SPOOF_B_STR("org.lineageos.backgrounds",  "com.android.wallpaper.sys");
@@ -631,6 +595,7 @@ jobs:
           						SPOOF_B_STR("org.protonaosp.deviceconfig",  "com.google.android.syssetup");
           						SPOOF_B_STR("com.termux",                   "com.sys.ui");
           						
+          						/* 3. Spoofing Detected LineageOS Services */
           						SPOOF_B_STR("lineageglobalactions", "android.policy.sysui");
           						SPOOF_B_STR("lineagehardware",      "google.hardware");
           						SPOOF_B_STR("lineagehealth",        "google.health");
@@ -646,17 +611,13 @@ jobs:
           	}
           	/* ------------------------------ */
           """
-              if "BINDER MASS SPOOFER (ULTRA SAFE)" not in binder_content:
+              if "BINDER MASS SPOOFER" not in binder_content:
                   if "#include <linux/mm.h>" not in binder_content:
                       binder_content = binder_content.replace("#include <linux/slab.h>", "#include <linux/slab.h>\n#include <linux/mm.h>")
+                      
                   binder_content = binder_content.replace(target_binder, repl_binder)
                   with open(binder_path, "w") as f: f.write(binder_content)
-                  print("✅ binder.c -> SPOOFED (SAFE MODE)")
-
-          # Process cmdline.c, bootconfig.c, array.c, services.c here exactly as before...
-          # (Aapka baaki ka code cmdline/bootconfig bypass wala yahan same rahega)
-          EOF
-          echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
+                  print("✅ binder.c -> SPOOFED VIA PYTHON (PACKAGE MATCH)")
 
 
 
