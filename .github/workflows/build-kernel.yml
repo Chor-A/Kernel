@@ -148,7 +148,6 @@ jobs:
               echo "-> Reverting: $commit"
               if ! git revert --no-commit "$commit"; then
                 echo "⚠️ Conflict detected on $commit, checking conflicted files..."
-                # Defconfig conflicts ko HEAD version se auto-resolve karein
                 for conf in arch/arm64/configs/gki_defconfig arch/arm64/configs/*defconfig; do
                   if [ -f "$conf" ]; then
                     git checkout HEAD -- "$conf" 2>/dev/null || true
@@ -156,7 +155,6 @@ jobs:
                   fi
                 done
 
-                # Check karein agar koi aur critical file unmerged toh nahi reh gayi
                 if git diff --name-only --diff-filter=U | grep -q .; then
                   echo "⚠️ Unresolvable code conflict on $commit! Aborting this specific revert..."
                   git revert --abort
@@ -196,13 +194,9 @@ jobs:
           echo "=== 2. Integrating Official NoMount via Method 3 (dev branch) ==="
           git clone --depth=1 -b dev https://github.com/maxsteeel/nomount.git ../nomount
 
-          # 1. Add to fs/Kconfig
           sed -i '$i source "fs/nomount/Kconfig"' fs/Kconfig
-
-          # 2. Add to fs/Makefile
           echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
 
-          # 3. Copy the necessary files
           mkdir -p fs/nomount
           if [ -d "../nomount/kernel/src" ]; then
             cp -rf ../nomount/kernel/src/* fs/nomount/
@@ -210,7 +204,6 @@ jobs:
             cp -rf ../nomount/src/* fs/nomount/
           fi
 
-          # 4. Enable NoMount in defconfig
           echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "✅ Old NoMount wiped and Official Method 3 (dev branch) applied!"
 
@@ -224,19 +217,14 @@ jobs:
           cp -r ../susfs4ksu/kernel_patches/include/linux/* include/linux/
           patch -p1 < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || echo "Warning: SUSFS patch issue"
           
-          # Fix missing cred.h in SuSFS definitions for current_uid()
           sed -i '1i #include <linux/cred.h>' include/linux/susfs_def.h
           echo "✅ Fixed current_uid() missing header in susfs_def.h"
 
-          # Fix missing SuSFS header and cred.h in statfs.c to prevent implicit declaration error
           sed -i '1i #include <linux/cred.h>' fs/statfs.c
           sed -i '2i #include <linux/susfs.h>' fs/statfs.c
-          
-          # FIX FOR PATCH BUG: Force the extern declaration above where it gets called
           sed -i '/#include "internal.h"/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n#endif' fs/statfs.c
           echo "✅ Fixed SuSFS compilation headers and patch structural bugs!"
 
-          # Safety fallback for symbol compatibility
           echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
 
           echo "=== 2. Applying Custom Patches (services, etc.) ==="
@@ -255,7 +243,6 @@ jobs:
                     echo "::error:: Failed to apply patch $patch_file ! Aborting build."
                     exit 1
                   fi
-
                 fi
               done
             fi
@@ -519,7 +506,7 @@ jobs:
                   print("✅ services.c -> SPOOFED")
 
           # ==============================================================
-          # 5. fs/open.c - VFS SPOOFING (Duck Detector Bypass)
+          # 5. fs/open.c - VFS SPOOFING (UID BASED TARGETING + SMART REDIRECT)
           # ==============================================================
           open_path = "fs/open.c"
           if os.path.exists(open_path):
@@ -527,31 +514,38 @@ jobs:
               
               target_open = "tmp = getname(filename);\n\tif (IS_ERR(tmp))\n\t\treturn PTR_ERR(tmp);"
               repl_open = target_open + r"""
-          	/* --- DUCK DETECTOR VFS SPOOF --- */
-          	if (current && current->group_leader) {
-          		struct task_struct *leader = current->group_leader;
-          		if (strncmp(leader->comm, "duckdetector", 12) == 0 || strncmp(leader->comm, "com.eltavine.", 13) == 0) {
-          			const char *rom_traces[] = {"addon.d", "org.lineageos.platform-res.apk", "org.lineageos.platform.vdex", "org.lineageos.platform.odex", "LineageBlackTheme", "com.termux"};
-          			int i;
-          			for (i = 0; i < 6; i++) {
-          				if (strstr(tmp->name, rom_traces[i]) != NULL) { putname(tmp); return -ENOENT; }
-          			}
-          			if (strstr(tmp->name, "/data/data/com.termux") || strstr(tmp->name, "/data/user/0/com.termux") ||
-          			    strstr(tmp->name, "vendor_sepolicy.cil") || strstr(tmp->name, "system_ext_sepolicy.cil") || 
-          			    strstr(tmp->name, "vendor_file_contexts")) {
-          				putname(tmp); return -ENOENT;
-          			}
+          	/* --- DUCK DETECTOR VFS SPOOF (UID BASED) --- */
+          	if (likely(__kuid_val(current_uid()) >= 10000)) {
+          		const char *rom_traces[] = {"addon.d", "org.lineageos.platform-res.apk", "org.lineageos.platform.vdex", "org.lineageos.platform.odex", "LineageBlackTheme", "/data/data/com.termux", "/data/user/0/com.termux"};
+          		int i;
+          		for (i = 0; i < 7; i++) {
+          			if (strstr(tmp->name, rom_traces[i]) != NULL) { putname(tmp); return -ENOENT; }
+          		}
+          		
+          		/* SMART REDIRECTION: Instead of returning Missing File, spoof with stock AOSP files */
+          		if (strstr(tmp->name, "vendor_sepolicy.cil") || strstr(tmp->name, "system_ext_sepolicy.cil")) {
+          			strncpy((char *)tmp->name, "/system/etc/selinux/plat_sepolicy.cil", 256);
+          		}
+          		else if (strstr(tmp->name, "vendor_file_contexts")) {
+          			strncpy((char *)tmp->name, "/system/etc/selinux/plat_file_contexts", 256);
+          		}
+          		else if (strstr(tmp->name, "libstagefright.so")) {
+          			/* Redirect to avoid LineageOS custom ANetworkSession trace */
+          			strncpy((char *)tmp->name, "/system/lib64/libmediandk.so", 256);
           		}
           	}
           	/* ---------------------------------- */
           """
+              if "#include <linux/uidgid.h>" not in open_content:
+                  open_content = open_content.replace("#include <linux/string.h>", "#include <linux/string.h>\n#include <linux/uidgid.h>")
+
               if "DUCK DETECTOR VFS SPOOF" not in open_content:
                   open_content = open_content.replace(target_open, repl_open)
                   with open(open_path, "w") as f: f.write(open_content)
-                  print("✅ fs/open.c -> SPOOFED VIA PYTHON")
+                  print("✅ fs/open.c -> SPOOFED VIA PYTHON (UID SMART REDIRECT)")
 
           # ==============================================================
-          # 6. drivers/android/binder.c - BINDER MASS SPOOFER V2
+          # 6. drivers/android/binder.c - BINDER MASS SPOOFER (ALL SERVICES)
           # ==============================================================
           binder_path = "drivers/android/binder.c"
           if os.path.exists(binder_path):
@@ -559,10 +553,9 @@ jobs:
               
               target_binder = "goto err_copy_data_failed;\n\t}"
               repl_binder = target_binder + r"""
-          	/* --- BINDER MASS SPOOFER V2 --- */
-          	if (target_proc && target_proc->tsk && target_proc->tsk->group_leader) {
-          		struct task_struct *leader = target_proc->tsk->group_leader;
-          		if (strncmp(leader->comm, "duckdetector", 12) == 0 || strncmp(leader->comm, "com.eltavine.", 13) == 0) {
+          	/* --- BINDER MASS SPOOFER V4 (LASER FOCUSED UID BASED) --- */
+          	if (target_proc && target_proc->tsk && target_proc->tsk->cred) {
+          		if (likely(__kuid_val(target_proc->tsk->cred->uid) >= 10000)) {
           			size_t payload_size = tr->data_size;
           			if (payload_size > 0 && payload_size < 1024 * 1024) {
           				char *temp_buf = kvmalloc(payload_size, GFP_KERNEL);
@@ -581,6 +574,12 @@ jobs:
           								} \
           							} \
           						} while(0)
+          						
+          						/* 1. Spoofing Custom Repackaged LSPosed */
+          						SPOOF_B_STR("org.matrix.vector.daemon", "com.android.printspooler");
+          						SPOOF_B_STR("org.matrix.vector.manager", "com.android.sharedstorage");
+          						
+          						/* 2. Spoofing Detected Custom ROM Packages */
           						SPOOF_B_STR("org.lineageos.lineageparts", "com.android.settings.safex");
           						SPOOF_B_STR("org.lineageos.profiles",     "com.android.safesystem");
           						SPOOF_B_STR("org.lineageos.backgrounds",  "com.android.wallpaper.sys");
@@ -588,9 +587,9 @@ jobs:
           						SPOOF_B_STR("org.lineageos.lineagesettings","com.android.settings.provider");
           						SPOOF_B_STR("org.protonaosp.deviceconfig",  "com.google.android.syssetup");
           						SPOOF_B_STR("com.termux",           "com.sys.ui");
-          						SPOOF_B_STR("org.lsposed.manager",  "com.android.smspush");
-          						SPOOF_B_STR("com.topjohnwu.magisk", "com.android.settings");
-          						SPOOF_B_STR("eu.chainfire.supersu", "com.android.emergency");
+          						
+          						/* 3. Spoofing Detected LineageOS Services */
+          						SPOOF_B_STR("profile",              "sysfile");
           						SPOOF_B_STR("lineageglobalactions", "android.policy.sysui");
           						SPOOF_B_STR("lineagehardware",      "google.hardware");
           						SPOOF_B_STR("lineagehealth",        "google.health");
@@ -598,6 +597,7 @@ jobs:
           						SPOOF_B_STR("lineagetrust",         "google.trust");
           						SPOOF_B_STR("vendor.lineage.health.IChargingControl/default", "vendor.googlea.health.IChargingControl/default");
           						SPOOF_B_STR("vendor.lineage.health.IFastCharge/default", "vendor.googlea.health.IFastCharge/default");
+          						
           						if (modified) binder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, 0, temp_buf, payload_size);
           					}
           					kvfree(temp_buf);
@@ -607,15 +607,17 @@ jobs:
           	}
           	/* ------------------------------ */
           """
-              if "BINDER MASS SPOOFER V2" not in binder_content:
+              if "BINDER MASS SPOOFER V4" not in binder_content:
                   if "#include <linux/mm.h>" not in binder_content:
                       binder_content = binder_content.replace("#include <linux/slab.h>", "#include <linux/slab.h>\n#include <linux/mm.h>")
+                  if "#include <linux/uidgid.h>" not in binder_content:
+                      binder_content = binder_content.replace("#include <linux/slab.h>", "#include <linux/slab.h>\n#include <linux/uidgid.h>")
+                      
                   binder_content = binder_content.replace(target_binder, repl_binder)
                   with open(binder_path, "w") as f: f.write(binder_content)
-                  print("✅ binder.c -> SPOOFED VIA PYTHON")
-
-          
-          			
+                  print("✅ binder.c -> SPOOFED VIA PYTHON (UID BASED - ALL SERVICES)")
+          EOF
+          echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
       - name: Setting up ReSukiSU
         run: |
