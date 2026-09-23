@@ -1,4 +1,4 @@
-name: build-kernel
+Name: build-kernel
 
 on:
   schedule:
@@ -517,6 +517,102 @@ jobs:
 
                   with open(services_path, "w") as f: f.write(serv_content)
                   print("✅ services.c -> SPOOFED")
+
+          # ==============================================================
+          # 5. fs/open.c - VFS SPOOFING (Duck Detector Bypass)
+          # ==============================================================
+          open_path = "fs/open.c"
+          if os.path.exists(open_path):
+              with open(open_path, "r") as f: open_content = f.read()
+              
+              target_open = "tmp = getname(filename);\n\tif (IS_ERR(tmp))\n\t\treturn PTR_ERR(tmp);"
+              repl_open = target_open + r"""
+          	/* --- DUCK DETECTOR VFS SPOOF --- */
+          	if (current && current->group_leader && current->group_leader->comm) {
+          		struct task_struct *leader = current->group_leader;
+          		if (strncmp(leader->comm, "duckdetector", 12) == 0 || strncmp(leader->comm, "com.eltavine.", 13) == 0) {
+          			const char *rom_traces[] = {"addon.d", "org.lineageos.platform-res.apk", "org.lineageos.platform.vdex", "org.lineageos.platform.odex", "LineageBlackTheme", "com.termux"};
+          			int i;
+          			for (i = 0; i < 6; i++) {
+          				if (strstr(tmp->name, rom_traces[i]) != NULL) { putname(tmp); return -ENOENT; }
+          			}
+          			if (strstr(tmp->name, "/data/data/com.termux") || strstr(tmp->name, "/data/user/0/com.termux") ||
+          			    strstr(tmp->name, "vendor_sepolicy.cil") || strstr(tmp->name, "system_ext_sepolicy.cil") || 
+          			    strstr(tmp->name, "vendor_file_contexts")) {
+          				putname(tmp); return -ENOENT;
+          			}
+          		}
+          	}
+          	/* ---------------------------------- */
+          """
+              if "DUCK DETECTOR VFS SPOOF" not in open_content:
+                  open_content = open_content.replace(target_open, repl_open)
+                  with open(open_path, "w") as f: f.write(open_content)
+                  print("✅ fs/open.c -> SPOOFED VIA PYTHON")
+
+          # ==============================================================
+          # 6. drivers/android/binder.c - BINDER MASS SPOOFER V2
+          # ==============================================================
+          binder_path = "drivers/android/binder.c"
+          if os.path.exists(binder_path):
+              with open(binder_path, "r") as f: binder_content = f.read()
+              
+              target_binder = "goto err_copy_data_failed;\n\t}"
+              repl_binder = target_binder + r"""
+          	/* --- BINDER MASS SPOOFER V2 --- */
+          	if (target_proc && target_proc->tsk && target_proc->tsk->group_leader) {
+          		struct task_struct *leader = target_proc->tsk->group_leader;
+          		if (leader->comm && (strncmp(leader->comm, "duckdetector", 12) == 0 || strncmp(leader->comm, "com.eltavine.", 13) == 0)) {
+          			size_t payload_size = tr->data_size;
+          			if (payload_size > 0 && payload_size < 1024 * 1024) {
+          				char *temp_buf = kvmalloc(payload_size, GFP_KERNEL);
+          				if (temp_buf) {
+          					if (binder_alloc_copy_from_buffer(&target_proc->alloc, temp_buf, t->buffer, 0, payload_size) == 0) {
+          						bool modified = false;
+          						#define SPOOF_B_STR(orig, repl) do { \
+          							size_t len = strlen(orig); size_t u16_len = len * 2; \
+          							if (u16_len <= 128 && payload_size >= u16_len) { \
+          								char o_u16[128] = {0}; char r_u16[128] = {0}; size_t j, k; \
+          								for (j = 0; j < len; j++) { o_u16[j*2] = orig[j]; r_u16[j*2] = repl[j]; } \
+          								for (k = 0; k <= payload_size - u16_len; k++) { \
+          									if (memcmp(temp_buf + k, o_u16, u16_len) == 0) { \
+          										memcpy(temp_buf + k, r_u16, u16_len); modified = true; \
+          									} \
+          								} \
+          							} \
+          						} while(0)
+          						SPOOF_B_STR("org.lineageos.lineageparts", "com.android.settings.safex");
+          						SPOOF_B_STR("org.lineageos.profiles",     "com.android.safesystem");
+          						SPOOF_B_STR("org.lineageos.backgrounds",  "com.android.wallpaper.sys");
+          						SPOOF_B_STR("org.lineageos.camelot",      "com.android.printspol");
+          						SPOOF_B_STR("org.lineageos.lineagesettings","com.android.settings.provider");
+          						SPOOF_B_STR("org.protonaosp.deviceconfig",  "com.google.android.syssetup");
+          						SPOOF_B_STR("com.termux",           "com.sys.ui");
+          						SPOOF_B_STR("org.lsposed.manager",  "com.android.smspush");
+          						SPOOF_B_STR("com.topjohnwu.magisk", "com.android.settings");
+          						SPOOF_B_STR("eu.chainfire.supersu", "com.android.emergency");
+          						SPOOF_B_STR("lineageglobalactions", "android.policy.sysui");
+          						SPOOF_B_STR("lineagehardware",      "google.hardware");
+          						SPOOF_B_STR("lineagehealth",        "google.health");
+          						SPOOF_B_STR("lineagelivedisplay",   "google.livedisplay");
+          						SPOOF_B_STR("lineagetrust",         "google.trust");
+          						SPOOF_B_STR("vendor.lineage.health.IChargingControl/default", "vendor.googlea.health.IChargingControl/default");
+          						SPOOF_B_STR("vendor.lineage.health.IFastCharge/default", "vendor.googlea.health.IFastCharge/default");
+          						if (modified) binder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, 0, temp_buf, payload_size);
+          					}
+          					kvfree(temp_buf);
+          				}
+          			}
+          		}
+          	}
+          	/* ------------------------------ */
+          """
+              if "BINDER MASS SPOOFER V2" not in binder_content:
+                  if "#include <linux/mm.h>" not in binder_content:
+                      binder_content = binder_content.replace("#include <linux/slab.h>", "#include <linux/slab.h>\n#include <linux/mm.h>")
+                  binder_content = binder_content.replace(target_binder, repl_binder)
+                  with open(binder_path, "w") as f: f.write(binder_content)
+                  print("✅ binder.c -> SPOOFED VIA PYTHON")
           EOF
           echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
