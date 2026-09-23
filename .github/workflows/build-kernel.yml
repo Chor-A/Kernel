@@ -32,7 +32,6 @@ on:
         options:
           - clang 19
           - clang 14
-          - neutron clang
         default: "clang 19"
       defconfig_fragment_exclude:
         description: 'Defconfig fragments to exclude'
@@ -67,7 +66,7 @@ jobs:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
       KERNEL_COMMIT: ${{ inputs.kernel_commit }}
-      CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst","neutron clang":"neutron-clang"}')[inputs.clang_version] }}
+      CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst"}')[inputs.clang_version] }}
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
       APPEND_CONFIG: ${{ inputs.append_config }}
@@ -93,14 +92,6 @@ jobs:
           git config --global --add safe.directory "*"
           git config --global user.email "Antonio_Nelson@proton.me"
           git config --global user.name "Chor-A"
-
-      - name: Setup Neutron Clang via Antman
-        if: ${{ inputs.clang_version == 'neutron clang' }}
-        run: |
-          mkdir -p work/neutron-clang
-          cd work/neutron-clang
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
-          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Restore ccache cache
         if: ${{ inputs.ccache }}
@@ -207,7 +198,7 @@ jobs:
           echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "✅ Old NoMount wiped and Official Method 3 (dev branch) applied!"
 
-      - name: Apply SUSFS, Custom Patches & Direct Code Spoofing
+      - name: Apply SUSFS & Custom Patches
         run: |
           cd work/common
 
@@ -248,105 +239,6 @@ jobs:
             fi
           done
           echo "✅ All .patch files applied successfully!"
-
-          echo "=== 3. Directly Injecting Universal VFS & Binder Spoof via Python ==="
-          python3 - << 'EOF'
-          import os
-
-          # ==============================================================
-          # 1. fs/namei.c - UNIVERSAL VFS SPOOFING (CATCHES ALL SYSCALLS)
-          # ==============================================================
-          namei_path = "fs/namei.c"
-          if os.path.exists(namei_path):
-              with open(namei_path, "r") as f: namei_content = f.read()
-              
-              target_namei = "audit_getname(result);\n\treturn result;"
-              repl_namei = r"""
-          	/* --- DUCK DETECTOR UNIVERSAL VFS SPOOF --- */
-          	if (likely(__kuid_val(current_uid()) >= 10000) && result && result->name) {
-          		if (strstr(result->name, "addon.d") || 
-          		    strstr(result->name, "org.lineageos.platform-res.apk") ||
-          		    strstr(result->name, "org.lineageos.platform.vdex") || 
-          		    strstr(result->name, "org.lineageos.platform.odex") ||
-          		    strstr(result->name, "LineageBlackTheme")) {
-          			
-          			/* Hides nativeFiles from stat(), access(), and open() universally */
-          			strncpy((char *)result->name, "/system/non_existent_dummy_file", 256);
-          		}
-          	}
-          	/* ----------------------------------------- */
-          	audit_getname(result);
-          	return result;
-          """
-              if "#include <linux/uidgid.h>" not in namei_content:
-                  namei_content = namei_content.replace("#include <linux/fs.h>", "#include <linux/fs.h>\n#include <linux/uidgid.h>")
-
-              if "DUCK DETECTOR UNIVERSAL VFS SPOOF" not in namei_content:
-                  namei_content = namei_content.replace(target_namei, repl_namei)
-                  with open(namei_path, "w") as f: f.write(namei_content)
-                  print("✅ fs/namei.c -> SPOOFED (UNIVERSAL PATH INTERCEPT)")
-
-          # ==============================================================
-          # 2. drivers/android/binder.c - BINDER SERVICE SPOOFER (CRASH-PROOF)
-          # ==============================================================
-          binder_path = "drivers/android/binder.c"
-          if os.path.exists(binder_path):
-              with open(binder_path, "r") as f: binder_content = f.read()
-              
-              target_binder = "goto err_copy_data_failed;\n\t}"
-              repl_binder = target_binder + r"""
-          	/* --- BINDER SERVICE SPOOFER (ULTRA SAFE) --- */
-          	if (target_proc && target_proc->tsk && target_proc->tsk->cred) {
-          		if (likely(__kuid_val(target_proc->tsk->cred->uid) >= 10000)) {
-          			size_t payload_size = tr->data_size;
-          			if (payload_size > 0 && payload_size < 1024 * 1024) {
-          				char *temp_buf = kvmalloc(payload_size, GFP_KERNEL);
-          				if (temp_buf) {
-          					if (binder_alloc_copy_from_buffer(&target_proc->alloc, temp_buf, t->buffer, 0, payload_size) == 0) {
-          						bool modified = false;
-          						#define SPOOF_B_STR(orig, repl) do { \
-          							size_t len = strlen(orig); size_t u16_len = len * 2; \
-          							if (u16_len <= 128 && payload_size >= u16_len) { \
-          								char o_u16[128] = {0}; char r_u16[128] = {0}; size_t j, k; \
-          								for (j = 0; j < len; j++) { o_u16[j*2] = orig[j]; r_u16[j*2] = repl[j]; } \
-          								for (k = 0; k <= payload_size - u16_len; k++) { \
-          									if (memcmp(temp_buf + k, o_u16, u16_len) == 0) { \
-          										memcpy(temp_buf + k, r_u16, u16_len); modified = true; \
-          									} \
-          								} \
-          							} \
-          						} while(0)
-          						
-          						/* HIDING LINEAGEOS SERVICES ONLY (ZERO CRASH RISK) */
-          						SPOOF_B_STR("lineageglobalactions", "android.policy.sysui");
-          						SPOOF_B_STR("lineagehardware",      "google.hardware");
-          						SPOOF_B_STR("lineagehealth",        "google.health");
-          						SPOOF_B_STR("lineagelivedisplay",   "google.livedisplay");
-          						SPOOF_B_STR("lineagetrust",         "google.trust");
-          						SPOOF_B_STR("vendor.lineage.health.IChargingControl/default", "vendor.googlea.health.IChargingControl/default");
-          						SPOOF_B_STR("vendor.lineage.health.IFastCharge/default", "vendor.googlea.health.IFastCharge/default");
-          						
-          						if (modified) binder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, 0, temp_buf, payload_size);
-          					}
-          					kvfree(temp_buf);
-          				}
-          			}
-          		}
-          	}
-          	/* ------------------------------------------- */
-          """
-              if "BINDER SERVICE SPOOFER" not in binder_content:
-                  if "#include <linux/mm.h>" not in binder_content:
-                      binder_content = binder_content.replace("#include <linux/slab.h>", "#include <linux/slab.h>\n#include <linux/mm.h>")
-                  if "#include <linux/uidgid.h>" not in binder_content:
-                      binder_content = binder_content.replace("#include <linux/slab.h>", "#include <linux/slab.h>\n#include <linux/uidgid.h>")
-                      
-                  binder_content = binder_content.replace(target_binder, repl_binder)
-                  with open(binder_path, "w") as f: f.write(binder_content)
-                  print("✅ binder.c -> SPOOFED (SERVICE HIDING)")
-
-          EOF
-          echo "✅ PYTHON SCRIPT EXECUTION COMPLETE."
 
       - name: Setting up ReSukiSU
         run: |
