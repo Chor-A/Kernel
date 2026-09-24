@@ -755,14 +755,20 @@ jobs:
           echo "=== Syncing Neutron Clang ==="
           mkdir -p $GITHUB_WORKSPACE/neutron-clang
           cd $GITHUB_WORKSPACE/neutron-clang
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
+          
+          # Antman ko local file ki tarah download karke permission dena zaroori hai
+          curl -sO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
+          chmod +x antman
+          
+          # Ab locally antman se sync aur patch run karein
+          ./antman -S
           ./antman --patch=glibc
           
           echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
           echo "CC=ccache clang" >> $GITHUB_ENV
           echo "CXX=ccache clang++" >> $GITHUB_ENV
           echo "LTO=full" >> $GITHUB_ENV
-
+          
       - name: Build kernel
         run: |
           chmod +x ./build-kernel.sh
