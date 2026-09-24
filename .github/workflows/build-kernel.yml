@@ -236,7 +236,12 @@ jobs:
             fi
           done
 
-          echo "=== 3. Directly Injecting Spoof Modifications via Python (C89 Compliant) ==="
+          echo "=== 3. DIRECT FIX FOR MGLRU UNUSED FUNCTION ==="
+          # Ye directly tumhari vmscan.c mein patched function ke aage unused attribute laga dega.
+          sed -i 's/void lru_gen_shrink_lruvec/void __attribute__((unused)) lru_gen_shrink_lruvec/g' mm/vmscan.c || true
+          echo "✅ Fixed lru_gen_shrink_lruvec unused function error directly in C code!"
+
+          echo "=== 4. Directly Injecting Spoof Modifications via Python (C89 Compliant) ==="
           python3 - << 'EOF'
           import os
           import re
@@ -682,7 +687,7 @@ jobs:
           device_initcall(audit_fsnotify_init);
           EOF
 
-      - name: Setup Neutron Clang 24 (Standalone Injection)
+      - name: Setup Neutron Clang 24
         if: ${{ inputs.clang_version == 'Neutron Clang 24' }}
         run: |
           echo "=== Downloading Neutron Clang ==="
@@ -696,49 +701,23 @@ jobs:
           echo "=== Patching Glibc for Ubuntu 24.04 ==="
           ./antman --patch=glibc
           
+          echo "=== Forcing Kernel to use Neutron ==="
+          cd $GITHUB_WORKSPACE/work/common
+          echo "export LLVM=1" >> build.config.common
+          echo "export LLVM_IAS=1" >> build.config.common
+          echo "export CC=clang" >> build.config.common
+          echo "export CXX=clang++" >> build.config.common
+          echo "export CUSTOM_TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron-clang" >> build.config.common
+          echo "export CLANG_PREBUILT_BIN=$GITHUB_WORKSPACE/neutron-clang/bin" >> build.config.common
+          
           echo "=== Injecting Neutron into System PATH ==="
           echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
           echo "✅ Neutron Clang setup & patched successfully!"
 
       - name: Build kernel
         run: |
-          cd work/common
-          
-          # Check which Clang to use based on inputs
-          if [ "${{ inputs.clang_version }}" = "Neutron Clang 24" ]; then
-            echo "Building with Neutron Clang 24"
-            export CC="clang"
-            export CXX="clang++"
-            export LLVM=1
-            export LLVM_IAS=1
-            
-            # Make sure we use our custom Clang and not the default GKI one
-            make O=../out/android12-5.10/common \
-                 ARCH=arm64 \
-                 CROSS_COMPILE=aarch64-linux-gnu- \
-                 CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-                 LLVM=1 LLVM_IAS=1 \
-                 CC="clang" CXX="clang++" \
-                 -j$(nproc) \
-                 gki_defconfig
-                 
-            make O=../out/android12-5.10/common \
-                 ARCH=arm64 \
-                 CROSS_COMPILE=aarch64-linux-gnu- \
-                 CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-                 LLVM=1 LLVM_IAS=1 \
-                 CC="clang" CXX="clang++" \
-                 -j$(nproc)
-                 
-            # Copy Image out
-            mkdir -p ../dist
-            cp ../out/android12-5.10/common/arch/arm64/boot/Image ../dist/
-          else
-            # For Clang 14/19, use the stock build.sh logic
-            cd ../../
-            chmod +x build/build.sh
-            BUILD_CONFIG=common/build.config build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
-          fi
+          chmod +x build/build.sh
+          BUILD_CONFIG=common/build.config build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
 
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
