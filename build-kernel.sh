@@ -226,8 +226,9 @@ fetch_clang() {
         if [ ! -x "$neutron_dir/bin/clang" ]; then
             info "Downloading Neutron Clang via antman..."
             mkdir -p "$neutron_dir"
-            (cd "$neutron_dir" && bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S)
-            (cd "$neutron_dir" && ./antman --patch=glibc)
+            
+            # Yahan par antman ko correctly download aur execute permission di gayi hai
+            (cd "$neutron_dir" && curl -sO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" && chmod +x antman && ./antman -S && ./antman --patch=glibc)
         fi
         
         local clang_dir
@@ -247,6 +248,9 @@ fetch_clang() {
         fi
         return 0
     fi
+
+    # ... Yahan se aage ka purana code waise hi rehne dein ...
+
 
     local root=$WORK_DIR/prebuilts-master/clang/host/linux-x86
     local tarball=$WORK_DIR/downloads/clang.tar.zst
