@@ -207,40 +207,6 @@ function build_vendor_dlkm() {
 
 export ROOT_DIR=$(readlink -f $(dirname $0)/..)
 
-echo "::group::[*] Downloading Clang"
-CLANG_BIN="${ROOT_DIR}/neutron-clang/bin"
-mkdir -p "${ROOT_DIR}/neutron-clang"
-cd "${ROOT_DIR}/neutron-clang"
-bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
-./antman --patch=glibc
-cd $OLDPWD
-
-if [ ! -d "$CLANG_BIN" ]; then
-    echo "[-] Clang not found in ${CLANG_BIN}."
-    exit 1
-fi
-
-export PATH="${CLANG_BIN}:$PATH"
-export CCACHE_DIR="$HOME/.ccache"
-export CCACHE_BASEDIR="${ROOT_DIR}"
-export CCACHE_NOHARDLINK=true
-export CCACHE_COMPILERCHECK=content
-export CC="ccache clang"
-export CXX="ccache clang++"
-export LLVM=1
-export LTO="full"
-
-ccache --zero-stats
-ccache --max-size=5G
-ccache --set-config=sloppiness="pch_defines,time_macros,file_macro,include_file_mtime,include_file_ctime"
-ccache --set-config=hash_dir=false
-ccache --set-config=base_dir="${ROOT_DIR}"
-ccache --set-config=compiler_check=content
-
-COMPILER_STRING=$(clang -v 2>&1 | head -n 1 | sed 's/(https..*//' | sed 's/ version//')
-echo "COMPILER_STRING=$COMPILER_STRING"
-echo "::endgroup::"
-
 FILE_SIGN_BIN=scripts/sign-file
 SIGN_SEC=certs/signing_key.pem
 SIGN_CERT=certs/signing_key.x509
@@ -519,7 +485,6 @@ if [ -n "${KMI_SYMBOL_LIST}" ]; then
               make O=${OUT_DIR} "${TOOL_ARGS[@]}" "${MAKE_ARGS[@]}" olddefconfig)
       grep CONFIG_UNUSED_KSYMS_WHITELIST ${OUT_DIR}/.config > /dev/null || {
         echo "ERROR: Failed to apply TRIM_NONLISTED_KMI kernel configuration" >&2
-        echo "Does your kernel support CONFIG_UNUSED_KSYMS_WHITELIST?" >&2
         exit 1
       }
     elif [ "${KMI_SYMBOL_LIST_STRICT_MODE}" = "1" ]; then
@@ -555,8 +520,6 @@ if [ -n "${MODULES_ORDER}" ]; then
   echo " Checking the list of modules:"
   if ! diff -u "${KERNEL_DIR}/${MODULES_ORDER}" "${OUT_DIR}/modules.order"; then
     echo "ERROR: modules list out of date" >&2
-    echo "Update it with:" >&2
-    echo "cp ${OUT_DIR}/modules.order ${KERNEL_DIR}/${MODULES_ORDER}" >&2
     exit 1
   fi
 fi
@@ -752,7 +715,7 @@ fi
 
 if [ -n "${UNSTRIPPED_MODULES}" ]; then
   echo "========================================================"
-  echo " Copying unstripped module files for debugging purposes (not loaded on device)"
+  echo " Copying unstripped module files for debugging purposes"
   mkdir -p ${UNSTRIPPED_DIR}
   for MODULE in ${UNSTRIPPED_MODULES}; do
     find ${MODULES_PRIVATE_DIR} -name ${MODULE} -exec cp {} ${UNSTRIPPED_DIR} \;
@@ -937,11 +900,6 @@ fi
 if readelf -a ${DIST_DIR}/vmlinux 2>&1 | grep -q trace_printk_fmt; then
   echo "========================================================"
   echo "WARN: Found trace_printk usage in vmlinux."
-  echo ""
-  echo "trace_printk will cause trace_printk_init_buffers executed in kernel"
-  echo "start, which will increase memory and lead warning shown during boot."
-  echo "We should not carry trace_printk in production kernel."
-  echo ""
   if [ ! -z "${STOP_SHIP_TRACEPRINTK}" ]; then
     echo "ERROR: stop ship on trace_printk usage." 1>&2
     exit 1
