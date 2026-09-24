@@ -36,120 +36,24 @@ DEFCONFIG_FRAGMENT=${DEFCONFIG_FRAGMENT:-}
 DEFCONFIG_FRAGMENT_EXCLUDE=${DEFCONFIG_FRAGMENT_EXCLUDE:-}
 APPEND_BUILD_ENV=${APPEND_BUILD_ENV:-}
 APPEND_CONFIG=${APPEND_CONFIG:-}
+LTO=${LTO:-full} # Default LTO set to full
 
 info() { printf '\033[1;34m[INFO]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$*" >&2; }
 err()  { printf '\033[1;31m[ERR]\033[0m %s\n' "$*" >&2; }
 die()  { err "$*"; exit 1; }
-# Render a path relative to the script dir when it lives under it, so status
-# messages do not leak the absolute machine layout (CI runner paths) to stdout.
 rel() { case "$1" in "$SCRIPT_DIR/"*) printf '%s\n' ".${1#"$SCRIPT_DIR"}" ;; *) printf '%s\n' "$1" ;; esac; }
-# Read a "export KEY=value" (or plain "KEY=value") line's value from a build
-# config. Falls back to empty string regardless of quirks (|cut|...||true).
-config_get() { # <file> <KEY>
+
+config_get() { 
     local key=$2
     grep -m1 -E "^(export[[:space:]]+)?$key=" "$1" 2>/dev/null | cut -d= -f2- | xargs || true
 }
-# curl for downloads, bounded only on the connect phase. A dead/hanging network
-# endpoint otherwise stalls on the host TCP connect timeout (~130s on Linux),
-# then retries - 3 times - stalling a many-gigabyte fetch (and the whole build
-# pipeline, since run_build waits on it) for many minutes. Sticking only a
-# connect timeout on never bounds a slow-but-alive transfer, so multi-GB
-# clang/build-tools tarballs still download at full speed.
 curl_dl() { curl --connect-timeout 10 "$@"; }
 
 usage() {
     cat <<EOF
 Usage: ./$SCRIPT_NAME [options]
-
-Builds a CloudFox kernel with Google's build.sh (unmodified):
-clones every component into the required layout under WORK_DIR,
-then runs: cd WORK_DIR && BUILD_CONFIG=... ./build/build.sh
-
-The Google kernel build scripts (kernel/build @ master-kernel-build-2021,
-the revision Android 12 / 5.10 kernels build against, unmodified) and the
-gcc host sysroot are shipped in this repository and copied into the
-build layout; clang, kernel-build-tools and build-tools are fetched from
-the PREBUILTS_TAG release of PREBUILTS_REPO by default (those bundles are
-built from the Google ACK sources by .github/workflows/prebuilts.yml at
-the same master-kernel-build-2021 revision).
-
-Default layout (matching the ACK android12-5.10 manifest):
-
-  work/
-    build/                         kernel/build scripts (in-repo, master-kernel-build-2021)
-    common/                        kernel source (git clone)
-    prebuilts-master/clang/host/linux-x86/clang-r416183b/   clang toolchain
-    prebuilts/kernel-build-tools/  kernel-build-tools (linux-x86: dtc, openssl, ...)
-    prebuilts/build-tools/         hermetic host build tools (linux-x86 + path)
-    prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/ gcc host sysroot (in-repo)
-
-Defaults (all overridable via the matching environment variable):
-
-  KERNEL_REPO       Kernel/common source (git clone); must be a full URL or
-                    scp-style remote, not a bare owner/repo name
-                    https://github.com/CloudFox-INC/CloudFox-Kernel
-  CLANG_URL         Clang toolchain (tar.zst); default is the prebuilt
-                    release of PREBUILTS_REPO at tag PREBUILTS_TAG,
-                    falling back to a sparse clone of the Google ACK
-                    platform/prebuilts/clang/host/linux-x86 at
-                    ACK_PREBUILTS_BRANCH
-  KBUILD_TOOLS_URL  kernel-build-tools bundle (tar.zst); falls back to a
-                    git clone of the AOSP kernel/prebuilts/build-tools at
-                    ACK_PREBUILTS_BRANCH
-  BUILDTOOLS_URL    hermetic build-tools bundle (tar.zst); falls back to a
-                    git clone of AOSP platform/prebuilts/build-tools at
-                    ACK_PREBUILTS_BRANCH
-  ACK_PREBUILTS_BRANCH  Google ACK branch the prebuilts come from
-                    (default: master — clang 19 toolchain; set to
-                    master-kernel-build-2021 for the classic clang 14
-                    used by android12-5.10 kernels)
-  WORK_DIR          Directory for the whole build tree (default: $SCRIPT_DIR/work)
-  KERNEL_DIR        Directory name of the kernel source in WORK_DIR (default: common)
-  BUILD_CONFIG      Build config to use (default: build.config.cloudfox, which
-                    is Google's own build.config.gki.aarch64)
-  PREBUILTS_TAG     Release tag holding the prebuilt bundles (default: prebuilts)
-  DEFCONFIG_FRAGMENT  Either a directory or a space-separated list of
-                     CONFIG_* fragment files appended to the committed
-                     gki_defconfig before the build. A directory loads every
-                     *.config file it contains, sorted by name, so new
-                     fragments are picked up automatically. Default: the
-                     per-branch set under $SCRIPT_DIR/build/fragments/<suffix>,
-                     resolved from KERNEL_BRANCH (a branch android12-5.10-<x>
-                     uses build/fragments/<x>). A branch with no matching set
-                     gets no fragments and builds against the stock committed
-                     defconfig. The CloudFox
-                     self-heal-config stage (POST_DEFCONFIG_CMDS) re-derives
-                     the canonical config and rewrites gki_defconfig, so the
-                     appended symbols become part of the effective build
-                     config. Symbols already carrying the same value are
-                     skipped (idempotent re-runs); a different value appends
-                     last and wins.
-  DEFCONFIG_FRAGMENT_EXCLUDE  Space- or comma-separated fragment names to
-                     disable, matched against each fragment file name in
-                     full ("metamodule-gki.config"), without the .config
-                     suffix ("metamodule-gki"), or by bare core name
-                     ("metamodule"). Excluded fragments are skipped even
-                     when the set is a directory loaded automatically or an
-                     explicit DEFCONFIG_FRAGMENT list.
-  GITHUB_TOKEN      If set, used to fetch assets from private prebuilt
-                    releases via the GitHub API when the direct download URL
-                    is unavailable (automatically set in GitHub Actions)
-
-Options:
-  --kernel-repo URL Override KERNEL_REPO
-  --kernel-branch B Override KERNEL_BRANCH
-  --kernel-commit C Override KERNEL_COMMIT
-  --clang-url URL   Override CLANG_URL
-  --work-dir DIR    Override WORK_DIR
-  --jobs N          Override build parallelism (make -j)
-  --defconfig-fragment FILE  Override DEFCONFIG_FRAGMENT
-  --defconfig-fragment-exclude NAME  Exclude a fragment by name (repeatable)
-  --clean           Remove WORK_DIR before building
-  --skip-fetch      Assume the layout already exists, build only
-  --skip-build      Fetch/prepare the layout only, do not build
-  -h, --help        Show this help
 EOF
     exit "${1:-0}"
 }
@@ -190,7 +94,7 @@ API_BASE=https://api.github.com/repos/$REPO_PATH
 
 download_asset() {
     local asset=$1 out=$2 fallback=${3:-} api_url
-if [ -z "${GITHUB_TOKEN:-}" ]; then
+    if [ -z "${GITHUB_TOKEN:-}" ]; then
         curl_dl -fL --retry 3 -sS -o "$out" "$RELEASE_BASE/$asset" && return 0
         [ -n "$fallback" ] && curl_dl -fL --retry 3 -sS -o "$out" "$fallback" && return 0
         return 1
@@ -223,9 +127,6 @@ preflight() {
         command -v "$t" >/dev/null 2>&1 || { warn "missing host tool: $t"; missing=1; }
     done
     [ "$missing" -eq 0 ] || die "install the missing tools and re-run"
-    # KERNEL_REPO must be a full remote location: a URL with a scheme
-    # (https://, git://, ssh://, ...) or an scp-style user@host:path. A bare
-    # "owner/repo" is ambiguous and would break the clone.
     case "$KERNEL_REPO" in
         *://*)       : ;;
         *@*:*)       : ;;
@@ -245,7 +146,7 @@ fetch_build_scripts() {
     else
         die "in-repo build scripts missing at $SCRIPT_DIR/build"
     fi
-    ok "build scripts copied from repo (Google kernel build, unmodified)"
+    ok "build scripts copied from repo"
 }
 
 fetch_kernel() {
@@ -269,12 +170,11 @@ fetch_kernel() {
 
 resolve_clang_dir() {
     local dir found
-    for dir in "$WORK_DIR/prebuilts-master/clang/host/linux-x86" \
+    # Add Neutron Clang directory to search path
+    for dir in "$WORK_DIR/neutron-clang" \
+               "$WORK_DIR/prebuilts-master/clang/host/linux-x86" \
                "$WORK_DIR/prebuilts/clang/host/linux-x86" \
                "$WORK_DIR"; do
-        # On a fresh runner the kernel clone, build output and download
-        # staging all live under WORK_DIR and are huge; clang never lives in
-        # them, so prune them from the fallback scan instead of walking them.
         found=$(find "$dir" \
             \( -path "$WORK_DIR/$KERNEL_DIR" -o -path "$WORK_DIR/out" \
                -o -path "$WORK_DIR/downloads" -o -path "$WORK_DIR/build" \
@@ -288,11 +188,7 @@ resolve_clang_dir() {
 }
 
 fetch_clang_download() {
-    # Download-only half of fetch_clang, safe to run in parallel with the
-    # kernel clone: the tarball download does not need the kernel tree (only
-    # fetch_clang's final CLANG_PREBUILT_BIN symlink does). Writes to a .part
-    # temp and renames on success so a partial file is never mistaken for a
-    # completed download.
+    if [[ "${CLANG_ASSET:-}" == *"neutron"* ]]; then return 0; fi
     local tarball=$WORK_DIR/downloads/clang.tar.zst
     local clang_dir
     clang_dir=$(resolve_clang_dir || true)
@@ -309,10 +205,7 @@ fetch_clang_download() {
 }
 
 fetch_clang_extract() {
-    # Extraction-only half of fetch_clang: unpacks the tarball downloaded by
-    # fetch_clang_download. It touches only the prebuilts tree, never the
-    # kernel tree, so it can overlap the kernel clone (only fetch_clang's
-    # pin-symlink step reads build.config.common from the kernel).
+    if [[ "${CLANG_ASSET:-}" == *"neutron"* ]]; then return 0; fi
     local root=$WORK_DIR/prebuilts-master/clang/host/linux-x86
     local tarball=$WORK_DIR/downloads/clang.tar.zst
     local clang_dir
@@ -327,6 +220,34 @@ fetch_clang_extract() {
 }
 
 fetch_clang() {
+    # Custom Logic for Neutron Clang 24 Download
+    if [[ "${CLANG_ASSET:-}" == *"neutron"* ]]; then
+        local neutron_dir="$WORK_DIR/neutron-clang"
+        if [ ! -x "$neutron_dir/bin/clang" ]; then
+            info "Downloading Neutron Clang via antman..."
+            mkdir -p "$neutron_dir"
+            (cd "$neutron_dir" && bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S)
+            (cd "$neutron_dir" && ./antman --patch=glibc)
+        fi
+        
+        local clang_dir
+        clang_dir=$(resolve_clang_dir || true)
+        [ -n "$clang_dir" ] && [ -x "$clang_dir/bin/clang" ] || die "no usable neutron clang toolchain"
+        ok "Neutron clang toolchain ready at $(rel "$clang_dir")"
+
+        local pin pin_dir
+        pin=$(config_get "$WORK_DIR/$KERNEL_DIR/build.config.common" CLANG_PREBUILT_BIN || true)
+        case "$pin" in
+            */bin) pin_dir=${pin%/bin} ;;
+            *)     pin_dir=$pin ;;
+        esac
+        if [ -n "$pin" ] && [ -n "$clang_dir" ]; then
+            mkdir -p "$(dirname "$WORK_DIR/$pin_dir")" 2>/dev/null || true
+            ln -sfnT "$clang_dir" "$WORK_DIR/$pin_dir"
+        fi
+        return 0
+    fi
+
     local root=$WORK_DIR/prebuilts-master/clang/host/linux-x86
     local tarball=$WORK_DIR/downloads/clang.tar.zst
     local pin pin_dir pin_name clang_dir
@@ -342,10 +263,6 @@ fetch_clang() {
     if [ -n "$clang_dir" ] && [ -x "$clang_dir/bin/clang" ]; then
         ok "clang toolchain present at $(rel "$clang_dir")"
     else
-        # The tarball extraction normally already ran in parallel with the
-        # kernel clone (fetch_clang_extract); these branches cover the
-        # fallbacks when there was no tarball to extract (download failed) or
-        # fetch_clang is called standalone.
         if [ -s "$tarball" ]; then
             tar -I 'zstd -T0' -xf "$tarball" -C "$root"
         elif [ -n "$CLANG_URL" ]; then
@@ -362,22 +279,18 @@ fetch_clang() {
             tar -I 'zstd -T0' -xf "$tarball" -C "$root"
         fi
         clang_dir=$(resolve_clang_dir || true)
-        [ -n "$clang_dir" ] && [ -x "$clang_dir/bin/clang" ] || die "no usable clang toolchain anywhere under $(rel "$WORK_DIR") (expected under $(rel "$root"))"
+        [ -n "$clang_dir" ] && [ -x "$clang_dir/bin/clang" ] || die "no usable clang toolchain anywhere"
         ok "clang toolchain ready at $(rel "$clang_dir")"
     fi
     if [ -n "$pin" ] && [ -x "$WORK_DIR/$pin_dir/bin/clang" ]; then
         ok "clang path pinned by build.config.common resolves"
     elif [ -n "$pin" ] && [ -n "$clang_dir" ]; then
         ln -sfnT "$clang_dir" "$WORK_DIR/$pin_dir"
-        ok "linked clang toolchain to the pinned path (build.config.common)"
+        ok "linked clang toolchain to the pinned path"
     fi
 }
 
 fetch_ccache() {
-    # Install the prebuilt ccache binary. Runs inside the parallel fetch pool
-    # so it overlaps the heavy prebuilt downloads instead of serializing as a
-    # separate workflow step. Nothing here is fatal: install_ccache_wrappers
-    # no-ops (and the build proceeds un-cached) if ccache is unavailable.
     command -v ccache >/dev/null 2>&1 && return 0
     local arch
     arch=$(uname -m)
@@ -393,42 +306,26 @@ fetch_ccache() {
     tar -xJf "$tmp" -C "$tree" --strip-components=1 \
         && sudo install -m 0755 "$tree/ccache" /usr/local/bin/ccache
     rm -rf "$tree"
-    command -v ccache >/dev/null 2>&1 || warn "ccache: install incomplete; building without ccache"
+    command -v ccache >/dev/null 2>&1 || warn "ccache: install incomplete"
 }
 
 install_ccache_wrappers() {
-    # ccache-accelerate the kernel compile. build.sh sets LLVM=1 (forcing
-    # "CC=clang" in its LLVM branch) and prepends CLANG_PREBUILT_BIN to PATH, so
-    # neither a CC="ccache clang" make arg nor ccache PATH symlinks survive.
-    # The one injection point that does is the compiler binary itself. In
-    # Android clang builds the real compilers live as "bin/<tool>.real" invoked
-    # by a Go compiler-wrapper "bin/<tool>"; relocating those wrappers breaks
-    # their sibling-.real lookup, so we wrap the ".real" file in place instead
-    # (falling back to wrapping "bin/<tool>" directly for plain single binaries).
-    # Every compiler invocation funnels through ccache, and it is fully
-    # reversible: the real binaries are preserved and restored on exit, so a
-    # ccache failure cannot poison the toolchain.
     [ -n "${CCACHE_OPT:-}" ] || return 0
-    [ -n "${CCACHE_WRAPPED:-}" ] && return 0   # already wrapped (idempotent)
+    [ -n "${CCACHE_WRAPPED:-}" ] && return 0   
     local ccache_bin
-    ccache_bin=$(command -v ccache) || { warn "ccache requested but not installed; skipping wrap"; CCACHE_OPT=; return 0; }
+    ccache_bin=$(command -v ccache) || { warn "ccache requested but not installed"; CCACHE_OPT=; return 0; }
     local clang_dir
     clang_dir=$(resolve_clang_dir || true)
     if [ -z "$clang_dir" ] || [ ! -x "$clang_dir/bin/clang" ]; then
         warn "ccache: no clang toolchain to wrap"; CCACHE_OPT=; return 0
     fi
-    # build.sh runs with a hermetic PATH that excludes /usr/local/bin, so the
-    # launchers must call ccache by absolute path (bare "exec ccache" would 127).
     "$ccache_bin" -o cache_dir="$WORK_DIR/.ccache" >/dev/null 2>&1 || true
     mkdir -p "$WORK_DIR/.ccache" "$clang_dir/.cfx-orig-bin"
     local tool target orig realbin
     for tool in clang clang++ ${CCACHE_LINK_TOOLS:-aarch64-linux-gnu-clang aarch64-linux-gnu-clang++}; do
         target="$clang_dir/bin/$tool"
-        [ -x "$target.real" ] && target="$target.real"   # Go-wrapper toolchain
+        [ -x "$target.real" ] && target="$target.real"
         [ -e "$target" ] || [ -L "$target" ] || continue
-        # If the real compiler is a symlink, resolve its absolute target NOW
-        # (relocating the symlink would dangle it); feed ccache the resolved
-        # genuine binary. For a plain file we feed the relocated copy instead.
         realbin=
         [ -L "$target" ] && realbin=$(readlink -f -- "$target" 2>/dev/null)
         orig="$clang_dir/.cfx-orig-bin/$(basename -- "$target")"
@@ -444,11 +341,6 @@ exec "$ccache_bin" "$realbin" "\$@"
 EOF
         chmod +x "$target"
     done
-    # CCACHE_* sizing/tuning (mirrors the approach used by the OnePlus KSU kernel
-    # workflow). The critical ones for kernel reuse: IGNOREOPTIONS drops the
-    # Android --sysroot=<build-tree path> (which changes per run and would bust
-    # every hit), DIRECT+DEPEND skip preprocessor re-runs, and COMPRESSION makes
-    # the on-disk cache smaller/faster to upload+restore across CI runs.
     export CCACHE_COMPILERCHECK=content
     export CCACHE_NOHASHDIR=true
     export CCACHE_BASEDIR="$WORK_DIR"
@@ -459,14 +351,13 @@ EOF
     export CCACHE_COMPRESSION_LEVEL=1
     export CCACHE_MAXSIZE=12G
     export CCACHE_DIR="$WORK_DIR/.ccache"
-    # depend mode (4.1+) stores dependency data so unchanged files hit without a
-    # full re-preprocess; enable opportunistically.
     if "$ccache_bin" --help 2>&1 | grep -qi 'depend'; then
         export CCACHE_DEPEND=true
     fi
     CCACHE_WRAPPED=1
-    info "ccache wrappers installed on $(rel "$clang_dir") toolchain (CCACHE_DIR=$(rel "$CCACHE_DIR"))"
+    info "ccache wrappers installed on $(rel "$clang_dir") toolchain"
 }
+
 restore_ccache_wrappers() {
     [ -n "${CCACHE_OPT:-}" ] || return 0
     local clang_dir=$(resolve_clang_dir || true)
@@ -479,14 +370,7 @@ restore_ccache_wrappers() {
     rm -rf "$clang_dir/.cfx-orig-bin"
 }
 
-# Populate a prebuilt tree at $dest: prefer an explicit URL tarball, then the
-# PREBUILTS_TAG release asset, then a shallow clone of the upstream repo.
-# Remaining args after <upstream_repo> are sparse-checkout paths (cone mode);
-# when given, the clone only fetches those subtrees instead of the whole
-# multi-GB repo (build-tools carries darwin-x86/windows payloads the kernel
-# build never reads). Falls back to a full clone if the server rejects
-# blob:none filtering.
-fetch_prebuilt_tree() { # <dest> <tarball> <url> <asset> <upstream_repo> [sparse dirs...]
+fetch_prebuilt_tree() { 
     local dest=$1 tarball=$2 url=$3 asset=$4 upstream=$5; shift 5
     local -a sparse=("$@")
     rm -rf "$dest"
@@ -567,7 +451,7 @@ fetch_gas() {
 verify_build_tools_links() {
     local farm=$WORK_DIR/build/build-tools/path/linux-x86
     if [ ! -d "$farm" ]; then
-        warn "no symlink farm at $farm (build scripts too old/new for this layout?)"
+        warn "no symlink farm at $farm"
         return
     fi
     local broken=0 n=0 f
@@ -583,56 +467,28 @@ verify_build_tools_links() {
     if [ "$broken" -eq 0 ]; then
         ok "build-tools symlink farm resolves ($n tools)"
     else
-        warn "some hermetic build tools are unresolved; the build may fail if they are used"
+        warn "some hermetic build tools are unresolved"
     fi
 }
 
 write_build_config() {
     cat > "$WORK_DIR/build.config.cloudfox" <<EOF
-# CloudFox build config: based on Google's GKI aarch64 build config
-# (which sources build.config.common + build.config.aarch64 + build.config.gki).
 export KERNEL_DIR=$KERNEL_DIR
 . \${ROOT_DIR}/\${KERNEL_DIR}/build.config.gki.aarch64
-
-# CloudFox addition: replace the stock check_defconfig hook with a
-# self-healing defconfig stage. It verifies the resolved config against the
-# committed gki_defconfig, repairs it when stale, and re-derives the effective
-# config until convergence. Runs in build.sh's env (ARCH, O=, LLVM, LLVM_IAS).
 export POST_DEFCONFIG_CMDS="\${ROOT_DIR}/build/self-heal-config.sh"
 EOF
-
-    if [ -n "$CLANG_URL" ]; then
+    if [ -n "$CLANG_URL" ] || [[ "${CLANG_ASSET:-}" == *"neutron"* ]]; then
         cat >> "$WORK_DIR/build.config.cloudfox" <<'EOF'
-
-# CloudFox addition (bare-metal-only toolchain, e.g. Neutron via CLANG_URL):
-# the custom clang cross-compiles the kernel but ships NO host/userspace
-# runtime, so host tools (fixdep, kallsyms, kconfig, ...) it builds die with
-# SIGSEGV when executed on the runner (HOSTCC was forced to clang by LLVM=1).
-# Two fixes, both local to this config so regular ACK runs are untouched:
-#  1. HERMETIC_TOOLCHAIN=0: the hermetic stage both gutted PATH (removing the
-#     host gcc) and injected clang-only flags (--sysroot, --rtlib=compiler-rt)
-#     into HOSTCFLAGS/HOSTLDFLAGS. With it off, host tools build with the
-#     plain system compiler.
-#  2. CLOUDFOX_HOST_CC/CXX: consumed by self-heal-config.sh to run its own
-#     `make` with the same HOSTCC/HOSTCXX override (build.sh's LLVM branch
-#     locally resets HOSTCC=clang, which must not leak into self-heal's make).
-# The actual HOSTCC/HOSTCXX make override for build.sh is passed by
-# build-kernel.sh as command-line args (see run_build), because build.sh's
-# LLVM branch hard-codes HOSTCC=clang in TOOL_ARGS.
 export HERMETIC_TOOLCHAIN=0
 export CLOUDFOX_HOST_CC=${CLOUDFOX_HOST_CC:-gcc}
 export CLOUDFOX_HOST_CXX=${CLOUDFOX_HOST_CXX:-g++}
 EOF
         ok "custom-toolchain host-tool override appended"
     fi
-
-    # APPEND_BUILD_ENV: comma-separated "KEY=VALUE" pairs written as export
-    # lines so build.sh (which sources this config) sees them. Example:
-    # TRIM_UNUSED_KSYMS=1,LOCALVERSION="-vanilla"
     if [ -n "$APPEND_BUILD_ENV" ]; then
         local IFS=, pair
         {
-            printf '\n# CloudFox addition: caller-appended build env (sourced by build.sh)\n'
+            printf '\n# CloudFox addition: caller-appended build env\n'
             for pair in $APPEND_BUILD_ENV; do
                 [ -n "$pair" ] && printf 'export %s\n' "$pair"
             done
@@ -641,17 +497,6 @@ EOF
     fi
 }
 
-# Resolve the default defconfig-fragment directory from the kernel branch name.
-# Branches are android12-5.10-<suffix>; the matching fragment set lives in
-# $SCRIPT_DIR/build/fragments/<suffix>/. An empty KERNEL_BRANCH falls back to
-# the branch actually checked out by the clone (fetch_kernel clones the repo's
-# default branch when none is given), so the fragment set follows the real
-# branch instead of silently building the stock defconfig. A branch with no
-# matching set (or not an android12-5.10- build at all) falls back to the
-# shared default set $SCRIPT_DIR/build/fragments/default/ (modskip, metamodule,
-# zram). A branch that resolves to neither yields no fragments and the kernel
-# builds against the stock committed defconfig. An explicit DEFCONFIG_FRAGMENT
-# is always honored as-is.
 resolve_fragment_dir() {
     local branch=$KERNEL_BRANCH suffix frag_dir
     if [ -z "$branch" ]; then
@@ -667,30 +512,16 @@ resolve_fragment_dir() {
         fi
     fi
     if [ -d "$SCRIPT_DIR/build/fragments/default" ]; then
-        [ -n "$branch" ] && warn "no CloudFox fragment set for branch '$branch'; falling back to default fragments"
         printf '%s\n' "$SCRIPT_DIR/build/fragments/default"
-    else
-        [ -n "$branch" ] && warn "no CloudFox fragment set for branch '$branch'; building with stock defconfig"
     fi
 }
 
 apply_defconfig_fragment() {
-    # If the caller set DEFCONFIG_FRAGMENT to a list of files, honor it as-is.
-    # A directory means "auto-load every *.config in it, sorted", so new
-    # fragments are picked up automatically without edits here. Otherwise the
-    # per-branch directory is resolved from KERNEL_BRANCH
-    # (build/fragments/<branch suffix>); a branch with no fragment set yields
-    # nothing and the kernel builds against the stock committed defconfig.
     local frags=${DEFCONFIG_FRAGMENT:-}
     [ -n "$frags" ] || frags=$(resolve_fragment_dir)
     if [ -d "$frags" ]; then
         frags=$(shopt -s nullglob; printf '%s\n' "$frags"/*.config | sort -d)
     fi
-    # Drop fragments listed in DEFCONFIG_FRAGMENT_EXCLUDE. Each name matches a
-    # fragment file's base name in full ("modskip-gki.config"), without the
-    # .config suffix ("modskip-gki"), or by bare core name ("modskip"). A plain
-    # array loop (no pipeline) also keeps `set -euo pipefail` from aborting
-    # when the exclusions empty the set.
     if [ -n "$DEFCONFIG_FRAGMENT_EXCLUDE" ]; then
         local excl=${DEFCONFIG_FRAGMENT_EXCLUDE//,/ }
         local -a keep=()
@@ -724,12 +555,8 @@ apply_defconfig_fragment() {
     arch=${arch:-arm64}
     defconfig=${defconfig:-gki_defconfig}
     local file=$WORK_DIR/$KERNEL_DIR/arch/$arch/configs/$defconfig
-    [ -f "$file" ] || die "defconfig not found: $file (defconfig fragment(s) not applied)"
+    [ -f "$file" ] || die "defconfig not found: $file"
 
-    # APPEND_CONFIG: comma-separated literal CONFIG_* lines injected into the
-    # defconfig on top of the resolved fragment set (e.g. CONFIG_KERNELSU=y).
-    # Collected into a temp file treated as one extra fragment so the lines go
-    # through the same per-symbol dedup and append machinery below.
     if [ -n "$APPEND_CONFIG" ]; then
         local lcf ap ifs_save
         lcf=$(mktemp)
@@ -759,8 +586,6 @@ apply_defconfig_fragment() {
     out=$(mktemp)
     awk -v s="$start" -v e="$end" '$0==s{skip=1;next} $0==e{skip=0;next} !skip' "$file" > "$stripped"
 
-    # Index the defconfig's effective symbol lines once; per-symbol membership
-    # checks below then avoid re-scanning the whole file with one grep fork each.
     local -A cfg
     while IFS= read -r line; do
         case "$line" in
@@ -800,53 +625,51 @@ apply_defconfig_fragment() {
         ok "appended defconfig fragment(s) to $(rel "$file")"
         commit_defconfig "$arch" "$defconfig" "apply CloudFox defconfig fragments"
     else
-        ok "defconfig fragment(s): all symbols already effective, defconfig unchanged"
+        ok "defconfig fragment(s): all symbols already effective"
         rm -f "$out"
     fi
     rm -f "$stripped" "$block"
 }
 
-# Commit a defconfig we just modified inside the kernel tree, so the kernel
-# version string does not gain a -dirty suffix (scripts/setlocalversion flags
-# any uncommitted tree change). Non-fatal: the build still proceeds if the
-# tree is not a git repo or the commit cannot be made.
-commit_defconfig() { # <arch> <defconfig> <message>
+commit_defconfig() { 
     local arch=$1 defconfig=$2 msg=$3
     local tree=$WORK_DIR/$KERNEL_DIR
-    [ -d "$tree/.git" ] || { warn "kernel tree is not a git repo; $defconfig left uncommitted (kernel version may carry -dirty)"; return 0; }
+    [ -d "$tree/.git" ] || return 0
     if git -C "$tree" -c user.name="${GIT_BUILDER_NAME:-CloudFox Kernel Builder}" \
             -c user.email="${GIT_BUILDER_EMAIL:-builder@localhost}" \
             commit -q --only -m "$msg: $defconfig" -- \
             "arch/$arch/configs/$defconfig" 2>/dev/null; then
         ok "committed $defconfig ($msg)"
     else
-        warn "could not commit $defconfig; kernel version may carry -dirty"
+        warn "could not commit $defconfig"
     fi
 }
 
 run_build() {
     local config=${BUILD_CONFIG:-build.config.cloudfox}
     if [ -z "$BUILD_CONFIG" ]; then
-        info "build config: $(rel "$WORK_DIR/build.config.cloudfox") (Google's build.config.gki.aarch64)"
+        info "build config: $(rel "$WORK_DIR/build.config.cloudfox")"
     else
         info "build config: $config"
         [ -f "$WORK_DIR/$config" ] || die "build config not found: $WORK_DIR/$config"
     fi
     [ -n "$JOBS" ] && export MAKEFLAGS="-j$JOBS"
-    # Bare-metal-only toolchains (CLANG_URL) cannot build host tools; make is
-    # forced to HOSTCC=clang by the kernel's LLVM=1, producing host binaries
-    # that SIGSEGV at runtime. Pass an explicit host compiler as a make
-    # command-line variable (overrides the Makefile's `HOSTCC = clang`).
+    
     local host_args=()
-    if [ -n "$CLANG_URL" ]; then
+    if [ -n "$CLANG_URL" ] || [[ "${CLANG_ASSET:-}" == *"neutron"* ]]; then
         host_args+=(
             "HOSTCC=${CLOUDFOX_HOST_CC:-gcc}"
             "HOSTCXX=${CLOUDFOX_HOST_CXX:-g++}"
             "HOSTLD=ld"
             "HOSTAR=ar"
         )
-        info "host tools will use ${CLOUDFOX_HOST_CC:-gcc} (custom toolchain has no host runtime)"
+        info "host tools will use ${CLOUDFOX_HOST_CC:-gcc}"
     fi
+
+    export LTO="${LTO}"
+    info "LTO mode set to: $LTO"
+    export LLVM=1
+
     (cd "$WORK_DIR" && BUILD_CONFIG=$config ./build/build.sh "${host_args[@]}")
 }
 
@@ -859,9 +682,9 @@ collect() {
     mv "$dist_out" "$dist_dir"
     if [ -f "$dist_dir/arch/arm64/boot/Image" ]; then
         if bash "$WORK_DIR/$KERNEL_DIR/scripts/extract-ikconfig" "$dist_dir/arch/arm64/boot/Image" > "$dist_dir/ikconfig" 2>/dev/null; then
-            ok "ikconfig extracted (embedded kernel config)"
+            ok "ikconfig extracted"
         else
-            warn "ikconfig extraction failed (is CONFIG_IKCONFIG enabled?)"
+            warn "ikconfig extraction failed"
         fi
     fi
     config_out=$(find "$WORK_DIR/out" -maxdepth 3 -name .config -print -quit 2>/dev/null || true)
@@ -871,46 +694,25 @@ collect() {
 
 main() {
     [ "$(readlink -f "$WORK_DIR")" != "$(readlink -f "$SCRIPT_DIR")" ] \
-        || die "WORK_DIR must not be the script directory (use the default $SCRIPT_DIR/work)"
+        || die "WORK_DIR must not be the script directory"
     if [ "$CLEAN" -eq 1 ]; then
         rm -rf "$WORK_DIR"
     fi
     mkdir -p "$WORK_DIR/downloads"
     info "work dir: $(rel "$WORK_DIR")"
-    info "prebuilt release base: $RELEASE_BASE"
     preflight
     if [ "$SKIP_FETCH" -eq 0 ]; then
         fetch_build_scripts
-        # Only fetch_clang depends on the kernel tree (it reads the
-        # CLANG_PREBUILT_BIN pin from build.config.common), so it waits for the
-        # kernel clone; kernel-build-tools/build-tools/gcc/gas are independent
-        # and network-bound, so they overlap the clone instead of serializing
-        # every ~GB on a fresh CI runner.
         local kernel_pid fetch_pids=() fetch_rc=0 pid clang_dl_pid
         fetch_kernel & kernel_pid=$!
         fetch_kernel_build_tools & fetch_pids+=("$!")
         fetch_build_tools & fetch_pids+=("$!")
-        # The gcc host sysroot is consumed only by the hermetic build stage
-        # (_setup_env.sh --sysroot=build/build-tools/sysroot). It is skipped
-        # when the hermetic stage is disabled: CLANG_URL forces
-        # HERMETIC_TOOLCHAIN=0 in the build config (custom toolchains), and an
-        # explicit HERMETIC_TOOLCHAIN=0 disables it directly - in both cases
-        # avoid the ~1GB sparse clone of a sysroot nothing will reference.
-        if [ -z "$CLANG_URL" ] && [ "${HERMETIC_TOOLCHAIN:-1}" != "0" ]; then
+        if [ -z "$CLANG_URL" ] && [ "${HERMETIC_TOOLCHAIN:-1}" != "0" ] && [[ "${CLANG_ASSET:-}" != *"neutron"* ]]; then
             fetch_gcc_host & fetch_pids+=("$!")
         fi
         fetch_gas & fetch_pids+=("$!")
-        # ccache is just a small prebuilt binary; fetching it here overlaps the
-        # multi-GB prebuilts instead of serializing as a workflow step. Falls
-        # back gracefully (wrap then no-ops) if the download fails.
         fetch_ccache & fetch_pids+=("$!")
-        # The clang tarball download and its zstd extraction only read
-        # CLANG_URL/release assets, never the kernel tree (fetch_clang's pin
-        # symlink needs the kernel), so both overlap the clone instead of
-        # serializing the ~1GB transfer and its decompression behind it.
         fetch_clang_download && fetch_clang_extract & clang_dl_pid=$!
-        # Wait out the clang download/extract before branching; it must complete
-        # before fetch_clang runs regardless of the clone's outcome.
         wait "$clang_dl_pid" || true
         if wait "$kernel_pid"; then
             fetch_clang & fetch_pids+=("$!")
@@ -928,17 +730,13 @@ main() {
     fi
     apply_defconfig_fragment
     if [ "$SKIP_BUILD" -eq 0 ]; then
-        # ccache binary is fetched in the parallel pool above and ccache itself
-        # comes on line only after the pool wait; wrap clang now that both are
-        # guaranteed. Also covers --skip-fetch (clang pre-dates this run).
-        # Always restore the toolchain binaries, even on build failure.
         install_ccache_wrappers
         trap restore_ccache_wrappers EXIT
         run_build
         collect
         info "done. kernel and artifacts: $(rel "$WORK_DIR/dist")"
     else
-        info "fetch phase done; layout ready in $(rel "$WORK_DIR") (run again without --skip-build)"
+        info "fetch phase done; layout ready in $(rel "$WORK_DIR")"
     fi
 }
 
