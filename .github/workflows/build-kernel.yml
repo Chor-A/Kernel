@@ -692,20 +692,27 @@ jobs:
           chmod +x antman
           ./antman -S
           
-          echo "=== Injecting Neutron into System PATH ==="
-          echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
+          echo "=== Patching Glibc for Ubuntu 24.04 ==="
+          ./antman --patch=glibc
           
-          echo "=== Forcing Kernel to use LLVM/Neutron ==="
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CXX=clang++" >> $GITHUB_ENV
+          echo "=== Forcing GKI build.sh to use Neutron ==="
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
-          echo "✅ Neutron Clang setup complete and injected into workflow!"
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+          echo "CUSTOM_TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron-clang" >> $GITHUB_ENV
+          echo "CLANG_PREBUILT_BIN=$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_ENV
+          echo "✅ Neutron Clang setup & patched successfully!"
 
       - name: Build kernel
         run: |
-          chmod +x ./build-kernel.sh
-          ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
+          cd work/common
+          
+          # Making the official GKI build script executable
+          chmod +x build/build.sh
+          
+          # Running the official build script with the correct config
+          BUILD_CONFIG=build.config build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
 
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
@@ -822,6 +829,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS, Full Spoofs & Neutron Clang 24. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
