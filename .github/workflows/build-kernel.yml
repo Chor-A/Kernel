@@ -695,24 +695,20 @@ jobs:
           echo "=== Patching Glibc for Ubuntu 24.04 ==="
           ./antman --patch=glibc
           
-          echo "=== Forcing GKI build.sh to use Neutron ==="
+          echo "=== Forcing Kernel to use Neutron ==="
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "CXX=clang++" >> $GITHUB_ENV
           echo "CUSTOM_TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron-clang" >> $GITHUB_ENV
           echo "CLANG_PREBUILT_BIN=$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_ENV
+          echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
           echo "✅ Neutron Clang setup & patched successfully!"
 
       - name: Build kernel
         run: |
-          cd work/common
-          
-          # Making the official GKI build script executable
           chmod +x build/build.sh
-          
-          # Running the official build script with the correct config
-          BUILD_CONFIG=build.config build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
+          ./build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
 
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
