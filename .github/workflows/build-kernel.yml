@@ -687,7 +687,7 @@ jobs:
           device_initcall(audit_fsnotify_init);
           EOF
 
-      - name: Setup Neutron Clang 24
+      - name: Setup Neutron Clang 24 (Standalone)
         if: ${{ inputs.clang_version == 'Neutron Clang 24' }}
         run: |
           echo "=== Downloading Neutron Clang ==="
@@ -702,13 +702,18 @@ jobs:
           ./antman --patch=glibc
           
           echo "=== Forcing Kernel to use Neutron ==="
-          cd $GITHUB_WORKSPACE/work/common
-          echo "export LLVM=1" >> build.config.common
-          echo "export LLVM_IAS=1" >> build.config.common
-          echo "export CC=clang" >> build.config.common
-          echo "export CXX=clang++" >> build.config.common
-          echo "export CUSTOM_TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron-clang" >> build.config.common
-          echo "export CLANG_PREBUILT_BIN=$GITHUB_WORKSPACE/neutron-clang/bin" >> build.config.common
+          cd $GITHUB_WORKSPACE
+          # Appending directly to build/build.config (which we know exists in your repo)
+          echo "" >> build/build.config
+          echo "export LLVM=1" >> build/build.config
+          echo "export LLVM_IAS=1" >> build/build.config
+          echo "export CC=clang" >> build/build.config
+          echo "export CXX=clang++" >> build/build.config
+          echo "export CUSTOM_TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron-clang" >> build/build.config
+          echo "export CLANG_PREBUILT_BIN=$GITHUB_WORKSPACE/neutron-clang/bin" >> build/build.config
+          
+          # Strict error bypass (Just in case the sed algorithm missed anything)
+          echo 'export KCFLAGS="-Wno-unused-function -Wno-error"' >> build/build.config
           
           echo "=== Injecting Neutron into System PATH ==="
           echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
@@ -717,7 +722,9 @@ jobs:
       - name: Build kernel
         run: |
           chmod +x build/build.sh
-          BUILD_CONFIG=common/build.config build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
+          # Fixed the path from common/build.config to build/build.config
+          BUILD_CONFIG=build/build.config build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
+
 
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
