@@ -1,4 +1,4 @@
-name: build-kernel
+Name: build-kernel
 
 on:
   schedule:
@@ -32,7 +32,8 @@ on:
         options:
           - clang 19
           - clang 14
-        default: "clang 19"
+          - Neutron Clang 24
+        default: "Neutron Clang 24"
       defconfig_fragment_exclude:
         description: 'Defconfig fragments to exclude'
         required: false
@@ -66,7 +67,7 @@ jobs:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
       KERNEL_COMMIT: ${{ inputs.kernel_commit }}
-      CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst"}')[inputs.clang_version] }}
+      CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst","Neutron Clang 24":"neutron-clang"}')[inputs.clang_version] }}
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
       APPEND_CONFIG: ${{ inputs.append_config }}
@@ -139,7 +140,6 @@ jobs:
               echo "-> Reverting: $commit"
               if ! git revert --no-commit "$commit"; then
                 echo "⚠️ Conflict detected on $commit, checking conflicted files..."
-                # Defconfig conflicts ko HEAD version se auto-resolve karein
                 for conf in arch/arm64/configs/gki_defconfig arch/arm64/configs/*defconfig; do
                   if [ -f "$conf" ]; then
                     git checkout HEAD -- "$conf" 2>/dev/null || true
@@ -147,7 +147,6 @@ jobs:
                   fi
                 done
 
-                # Check karein agar koi aur critical file unmerged toh nahi reh gayi
                 if git diff --name-only --diff-filter=U | grep -q .; then
                   echo "⚠️ Unresolvable code conflict on $commit! Aborting this specific revert..."
                   git revert --abort
@@ -187,13 +186,9 @@ jobs:
           echo "=== 2. Integrating Official NoMount via Method 3 (dev branch) ==="
           git clone --depth=1 -b dev https://github.com/maxsteeel/nomount.git ../nomount
 
-          # 1. Add to fs/Kconfig
           sed -i '$i source "fs/nomount/Kconfig"' fs/Kconfig
-
-          # 2. Add to fs/Makefile
           echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
 
-          # 3. Copy the necessary files
           mkdir -p fs/nomount
           if [ -d "../nomount/kernel/src" ]; then
             cp -rf ../nomount/kernel/src/* fs/nomount/
@@ -201,7 +196,6 @@ jobs:
             cp -rf ../nomount/src/* fs/nomount/
           fi
 
-          # 4. Enable NoMount in defconfig
           echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "✅ Old NoMount wiped and Official Method 3 (dev branch) applied!"
 
@@ -215,19 +209,10 @@ jobs:
           cp -r ../susfs4ksu/kernel_patches/include/linux/* include/linux/
           patch -p1 < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || echo "Warning: SUSFS patch issue"
           
-          # Fix missing cred.h in SuSFS definitions for current_uid()
           sed -i '1i #include <linux/cred.h>' include/linux/susfs_def.h
-          echo "✅ Fixed current_uid() missing header in susfs_def.h"
-
-          # Fix missing SuSFS header and cred.h in statfs.c to prevent implicit declaration error
           sed -i '1i #include <linux/cred.h>' fs/statfs.c
           sed -i '2i #include <linux/susfs.h>' fs/statfs.c
-          
-          # FIX FOR PATCH BUG: Force the extern declaration above where it gets called
           sed -i '/#include "internal.h"/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n#endif' fs/statfs.c
-          echo "✅ Fixed SuSFS compilation headers and patch structural bugs!"
-
-          # Safety fallback for symbol compatibility
           echo "int __attribute__((weak)) ksu_install_su_fd(struct file *file) { return 0; }" >> fs/susfs.c
 
           echo "=== 2. Applying Custom Patches (services, etc.) ==="
@@ -246,12 +231,10 @@ jobs:
                     echo "::error:: Failed to apply patch $patch_file ! Aborting build."
                     exit 1
                   fi
-
                 fi
               done
             fi
           done
-          echo "✅ All .patch files applied successfully!"
 
           echo "=== 3. Directly Injecting Spoof Modifications via Python (C89 Compliant) ==="
           python3 - << 'EOF'
@@ -299,7 +282,6 @@ jobs:
               if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
               return content, False
 
-          # 1. fs/proc/cmdline.c - ATOMIC FASTPATH
           cmdline_path = "fs/proc/cmdline.c"
           if os.path.exists(cmdline_path):
               with open(cmdline_path, "r") as f: content = f.read()
@@ -369,7 +351,6 @@ jobs:
                   with open(cmdline_path, "w") as f: f.write(new_content)
                   print("✅ cmdline.c -> SPOOFED")
 
-          # 2. fs/proc/bootconfig.c 
           boot_path = "fs/proc/bootconfig.c"
           if os.path.exists(boot_path):
               with open(boot_path, "r") as f: boot_content = f.read()
@@ -422,7 +403,6 @@ jobs:
                   with open(boot_path, "w") as f: f.write(new_boot_content)
                   print("✅ bootconfig.c -> SPOOFED")
 
-          # 3. Modify fs/proc/array.c (C89 Compliant)
           array_path = "fs/proc/array.c"
           if os.path.exists(array_path):
               with open(array_path, "r") as f: array_content = f.read()
@@ -437,7 +417,6 @@ jobs:
                   with open(array_path, "w") as f: f.write(array_content)
                   print("✅ array.c -> SPOOFED (C89 Compliant)")
 
-          # 4. Modify security/selinux/ss/services.c (Using GFP_KERNEL)
           services_path = "security/selinux/ss/services.c"
           if os.path.exists(services_path):
               with open(services_path, "r") as f: serv_content = f.read()
@@ -509,7 +488,6 @@ jobs:
                   with open(services_path, "w") as f: f.write(serv_content)
                   print("✅ services.c -> SPOOFED")
           EOF
-          echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
       - name: Setting up ReSukiSU
         run: |
@@ -553,7 +531,6 @@ jobs:
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_ENABLE_LOG=n" >> arch/arm64/configs/gki_defconfig
-          echo "✅ ReSukiSU + SuSFS applied successfully!"
 
           echo "=== 5. Absolute Stealth: LOCALVERSION Spoofing ==="
           cat << 'EOF_LOCAL' > scripts/setlocalversion
@@ -561,20 +538,12 @@ jobs:
           echo "-android12-9"
           EOF_LOCAL
           chmod +x scripts/setlocalversion
-          echo "✅ LOCALVERSION spoofing applied!"
 
       - name: Ensuring clean standard audit_fsnotify.c
         run: |
           cd work/common
           cat << 'EOF' > kernel/audit_fsnotify.c
           // SPDX-License-Identifier: GPL-2.0-or-later
-          /* audit_fsnotify.c -- tracking inodes
-           *
-           * Copyright 2003-2009,2014-2015 Red Hat, Inc.
-           * Copyright 2005 Hewlett-Packard Development Company, L.P.
-           * Copyright 2005 IBM Corporation
-           */
-
           #include <linux/kernel.h>
           #include <linux/audit.h>
           #include <linux/kthread.h>
@@ -597,62 +566,43 @@ jobs:
           };
 
           static struct fsnotify_group *audit_fsnotify_group;
+          #define AUDIT_FS_EVENTS (FS_MOVE | FS_CREATE | FS_DELETE | FS_DELETE_SELF | FS_MOVE_SELF)
 
-          #define AUDIT_FS_EVENTS (FS_MOVE | FS_CREATE | FS_DELETE | FS_DELETE_SELF |\
-          			 FS_MOVE_SELF)
-
-          static void audit_fsnotify_mark_free(struct audit_fsnotify_mark *audit_mark)
-          {
+          static void audit_fsnotify_mark_free(struct audit_fsnotify_mark *audit_mark) {
           	kfree(audit_mark->path);
           	kfree(audit_mark);
           }
 
-          static void audit_fsnotify_free_mark(struct fsnotify_mark *mark)
-          {
-          	struct audit_fsnotify_mark *audit_mark;
-
-          	audit_mark = container_of(mark, struct audit_fsnotify_mark, mark);
+          static void audit_fsnotify_free_mark(struct fsnotify_mark *mark) {
+          	struct audit_fsnotify_mark *audit_mark = container_of(mark, struct audit_fsnotify_mark, mark);
           	audit_fsnotify_mark_free(audit_mark);
           }
 
-          char *audit_mark_path(struct audit_fsnotify_mark *mark)
-          {
-          	return mark->path;
-          }
+          char *audit_mark_path(struct audit_fsnotify_mark *mark) { return mark->path; }
 
-          int audit_mark_compare(struct audit_fsnotify_mark *mark, u64 ino, dev_t dev)
-          {
-          	if (mark->ino == AUDIT_INO_UNSET)
-          		return 0;
+          int audit_mark_compare(struct audit_fsnotify_mark *mark, u64 ino, dev_t dev) {
+          	if (mark->ino == AUDIT_INO_UNSET) return 0;
           	return (mark->ino == ino) && (mark->dev == dev);
           }
 
-          static void audit_update_mark(struct audit_fsnotify_mark *audit_mark,
-          			     const struct inode *inode)
-          {
+          static void audit_update_mark(struct audit_fsnotify_mark *audit_mark, const struct inode *inode) {
           	audit_mark->dev = inode ? inode->i_sb->s_dev : AUDIT_DEV_UNSET;
           	audit_mark->ino = inode ? inode->i_ino : AUDIT_INO_UNSET;
           }
 
-          struct audit_fsnotify_mark *audit_alloc_mark(struct audit_krule *krule, char *pathname, int len)
-          {
+          struct audit_fsnotify_mark *audit_alloc_mark(struct audit_krule *krule, char *pathname, int len) {
           	struct audit_fsnotify_mark *audit_mark;
           	struct path path;
           	struct dentry *dentry;
           	int ret;
 
-          	if (pathname[0] != '/' || pathname[len-1] == '/')
-          		return ERR_PTR(-EINVAL);
+          	if (pathname[0] != '/' || pathname[len-1] == '/') return ERR_PTR(-EINVAL);
 
           	dentry = kern_path_parent(pathname, &path);
-          	if (IS_ERR(dentry))
-          		return ERR_CAST(dentry); 
+          	if (IS_ERR(dentry)) return ERR_CAST(dentry); 
 
           	audit_mark = kzalloc(sizeof(*audit_mark), GFP_KERNEL);
-          	if (unlikely(!audit_mark)) {
-          		audit_mark = ERR_PTR(-ENOMEM);
-          		goto out;
-          	}
+          	if (unlikely(!audit_mark)) { audit_mark = ERR_PTR(-ENOMEM); goto out; }
 
           	fsnotify_init_mark(&audit_mark->mark, audit_fsnotify_group);
           	audit_mark->mark.mask = AUDIT_FS_EVENTS;
@@ -666,23 +616,19 @@ jobs:
           		fsnotify_put_mark(&audit_mark->mark);
           		audit_mark = ERR_PTR(ret);
           	}
-
           out:
           	dput(dentry);
           	path_put(&path);
           	return audit_mark;
           }
 
-          static void audit_mark_log_rule_change(struct audit_fsnotify_mark *audit_mark, char *op)
-          {
+          static void audit_mark_log_rule_change(struct audit_fsnotify_mark *audit_mark, char *op) {
           	struct audit_buffer *ab;
           	struct audit_krule *rule = audit_mark->rule;
 
-          	if (!audit_enabled)
-          		return;
+          	if (!audit_enabled) return;
           	ab = audit_log_start(audit_context(), GFP_NOFS, AUDIT_CONFIG_CHANGE);
-          	if (unlikely(!ab))
-          		return;
+          	if (unlikely(!ab)) return;
           	audit_log_session_info(ab);
           	audit_log_format(ab, " op=%s path=", op);
           	audit_log_untrustedstring(ab, audit_mark->path);
@@ -691,51 +637,34 @@ jobs:
           	audit_log_end(ab);
           }
 
-          void audit_remove_mark(struct audit_fsnotify_mark *audit_mark)
-          {
+          void audit_remove_mark(struct audit_fsnotify_mark *audit_mark) {
           	fsnotify_destroy_mark(&audit_mark->mark, audit_fsnotify_group);
           	fsnotify_put_mark(&audit_mark->mark);
           }
 
-          void audit_remove_mark_rule(struct audit_krule *krule)
-          {
+          void audit_remove_mark_rule(struct audit_krule *krule) {
           	struct audit_fsnotify_mark *mark = krule->exe;
-
-          	if (mark) {
-          		audit_remove_mark(mark);
-          		krule->exe = NULL;
-          	}
+          	if (mark) { audit_remove_mark(mark); krule->exe = NULL; }
           }
 
-          static void audit_autoremove_mark_rule(struct audit_fsnotify_mark *audit_mark)
-          {
+          static void audit_autoremove_mark_rule(struct audit_fsnotify_mark *audit_mark) {
           	struct audit_krule *rule = audit_mark->rule;
           	struct audit_entry *entry = container_of(rule, struct audit_entry, rule);
-
           	audit_mark_log_rule_change(audit_mark, "autoremove_rule");
           	audit_del_rule(entry);
           }
 
           static int audit_mark_handle_event(struct fsnotify_mark *inode_mark, u32 mask,
           				   struct inode *inode, struct inode *dir,
-          				   const struct qstr *dname, u32 cookie)
-          {
-          	struct audit_fsnotify_mark *audit_mark;
-
-          	audit_mark = container_of(inode_mark, struct audit_fsnotify_mark, mark);
-
-          	if (WARN_ON_ONCE(inode_mark->group != audit_fsnotify_group) ||
-          	    WARN_ON_ONCE(!inode))
-          		return 0;
-
+          				   const struct qstr *dname, u32 cookie) {
+          	struct audit_fsnotify_mark *audit_mark = container_of(inode_mark, struct audit_fsnotify_mark, mark);
+          	if (WARN_ON_ONCE(inode_mark->group != audit_fsnotify_group) || WARN_ON_ONCE(!inode)) return 0;
           	if (mask & (FS_CREATE|FS_MOVED_TO|FS_DELETE|FS_MOVED_FROM)) {
-          		if (audit_compare_dname_path(dname, audit_mark->path, AUDIT_NAME_FULL))
-          			return 0;
+          		if (audit_compare_dname_path(dname, audit_mark->path, AUDIT_NAME_FULL)) return 0;
           		audit_update_mark(audit_mark, inode);
           	} else if (mask & (FS_DELETE_SELF|FS_UNMOUNT|FS_MOVE_SELF)) {
           		audit_autoremove_mark_rule(audit_mark);
           	}
-
           	return 0;
           }
 
@@ -744,17 +673,34 @@ jobs:
           	.free_mark = audit_fsnotify_free_mark,
           };
 
-          static int __init audit_fsnotify_init(void)
-          {
+          static int __init audit_fsnotify_init(void) {
           	audit_fsnotify_group = fsnotify_alloc_group(&audit_mark_fsnotify_ops);
-          	if (IS_ERR(audit_fsnotify_group)) {
-          		audit_fsnotify_group = NULL;
-          		audit_panic("cannot create audit fsnotify group");
-          	}
+          	if (IS_ERR(audit_fsnotify_group)) { audit_fsnotify_group = NULL; audit_panic("cannot create audit fsnotify group"); }
           	return 0;
           }
           device_initcall(audit_fsnotify_init);
           EOF
+
+      - name: Setup Neutron Clang 24 (Standalone Injection)
+        if: ${{ inputs.clang_version == 'Neutron Clang 24' }}
+        run: |
+          echo "=== Downloading Neutron Clang ==="
+          mkdir -p $GITHUB_WORKSPACE/neutron-clang
+          cd $GITHUB_WORKSPACE/neutron-clang
+          
+          curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" > antman
+          chmod +x antman
+          ./antman -S
+          
+          echo "=== Injecting Neutron into System PATH ==="
+          echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
+          
+          echo "=== Forcing Kernel to use LLVM/Neutron ==="
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+          echo "LLVM=1" >> $GITHUB_ENV
+          echo "LLVM_IAS=1" >> $GITHUB_ENV
+          echo "✅ Neutron Clang setup complete and injected into workflow!"
 
       - name: Build kernel
         run: |
@@ -773,7 +719,6 @@ jobs:
           git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg repack/mkbootimg_tool
           git clone --depth=1 https://android.googlesource.com/platform/external/avb repack/avb_tool
 
-          echo "--> Pulling ROM stock file dynamically..."
           curl -L "$BOOT_IMG_URL" -o repack/stock_boot.img
 
           PARTITION_SIZE=$(stat -c %s "repack/stock_boot.img")
@@ -788,10 +733,8 @@ jobs:
              exit 1
           fi
 
-          echo "--> Executing extraction parser step on ROM target..."
           python3 repack/mkbootimg_tool/unpack_bootimg.py --boot_img repack/stock_boot.img --out repack/extracted > repack/extracted/configs.txt
 
-          echo "=== 2. Launch Intelligent Config Python Swapper Engine ==="
           python3 - << 'EOF'
           import sys, os, subprocess
 
@@ -837,7 +780,6 @@ jobs:
              exit 1
           fi
 
-          echo "=== 3. Register AVB Signatures ==="
           python3 repack/avb_tool/avbtool.py add_hash_footer \
             --image "repack/output/boot.img" \
             --partition_name boot \
