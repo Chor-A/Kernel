@@ -471,6 +471,7 @@ jobs:
                       '\t\tif(!strcmp(n, "capability")) new_ids->cap_c=i;\n\t\telse if(!strcmp(n, "process")) new_ids->process_c=i;\n\t\telse if(!strcmp(n, "binder")) new_ids->binder_c=i;\n\t}\n'
                       '\tfor (i=1; i<=policy->policydb.p_types.nprim; i++) {\n'
                       '\t\tconst char *n = sym_name(&policy->policydb, SYM_TYPES, i - 1); if(!n) continue;\n'
+                      '\t\tconst char *n = sym_name(&policy->policydb, SYM_TYPES, i - 1); if(!n) continue;\n'
                       '\t\tif(!strcmp(n, "fsck_untrusted")) new_ids->fsck_t=i;\n\t\telse if(!strcmp(n, "shell")) new_ids->shell_t=i;\n\t\telse if(!strcmp(n, "su")) new_ids->su_t=i;\n'
                       '\t\telse if(!strcmp(n, "adbd")) new_ids->adbd_t=i;\n\t\telse if(!strcmp(n, "adbroot")) new_ids->adbroot_t=i;\n\t}\n'
                       '\tspin_lock(&spoof_update_lock);\n'
@@ -695,20 +696,49 @@ jobs:
           echo "=== Patching Glibc for Ubuntu 24.04 ==="
           ./antman --patch=glibc
           
-          echo "=== Forcing Kernel to use Neutron ==="
-          echo "LLVM=1" >> $GITHUB_ENV
-          echo "LLVM_IAS=1" >> $GITHUB_ENV
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CXX=clang++" >> $GITHUB_ENV
-          echo "CUSTOM_TOOLCHAIN_DIR=$GITHUB_WORKSPACE/neutron-clang" >> $GITHUB_ENV
-          echo "CLANG_PREBUILT_BIN=$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_ENV
+          echo "=== Injecting Neutron into System PATH ==="
           echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
           echo "✅ Neutron Clang setup & patched successfully!"
 
       - name: Build kernel
         run: |
-          chmod +x build/build.sh
-          ./build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
+          cd work/common
+          
+          # Check which Clang to use based on inputs
+          if [ "${{ inputs.clang_version }}" = "Neutron Clang 24" ]; then
+            echo "Building with Neutron Clang 24"
+            export CC="clang"
+            export CXX="clang++"
+            export LLVM=1
+            export LLVM_IAS=1
+            
+            # Make sure we use our custom Clang and not the default GKI one
+            make O=../out/android12-5.10/common \
+                 ARCH=arm64 \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+                 LLVM=1 LLVM_IAS=1 \
+                 CC="clang" CXX="clang++" \
+                 -j$(nproc) \
+                 gki_defconfig
+                 
+            make O=../out/android12-5.10/common \
+                 ARCH=arm64 \
+                 CROSS_COMPILE=aarch64-linux-gnu- \
+                 CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+                 LLVM=1 LLVM_IAS=1 \
+                 CC="clang" CXX="clang++" \
+                 -j$(nproc)
+                 
+            # Copy Image out
+            mkdir -p ../dist
+            cp ../out/android12-5.10/common/arch/arm64/boot/Image ../dist/
+          else
+            # For Clang 14/19, use the stock build.sh logic
+            cd ../../
+            chmod +x build/build.sh
+            BUILD_CONFIG=common/build.config build/build.sh ${{ inputs.ccache && '--ccache' || '' }}
+          fi
 
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
