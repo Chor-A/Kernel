@@ -772,17 +772,19 @@ jobs:
       - name: Build kernel
         run: |
           echo "=== Phase 1: Injecting PGO Instrumentation Flags ==="
+          
           # 1. Defconfig mein PGO enable karna
           echo "CONFIG_PGO_CLANG=y" >> work/common/arch/arm64/configs/gki_defconfig
           
-          # 2. Makefile mein compiler ko data record karne ka flag dena
+          # 2. Safe method: Environment variable se flag pass karna
           export KCFLAGS="-fprofile-generate"
           
-          echo "✅ Real PGO flags injected successfully!"
+          echo "✅ Real PGO flags injected safely via Environment Variable!"
           
           # 3. Normal Build start karna
           chmod +x ./build-kernel.sh
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
+
           
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
