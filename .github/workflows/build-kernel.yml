@@ -112,11 +112,11 @@ jobs:
             cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
           fail-on-cache-miss: false
 
-      - name: Add 32G swap (Fix for Full LTO OOM)
+      - name: Add 15G swap (Fix for Full LTO OOM)
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
-          sudo fallocate -l 32G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=32768
+          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=15360
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -923,6 +923,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
