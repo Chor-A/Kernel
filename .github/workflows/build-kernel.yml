@@ -45,7 +45,7 @@ on:
       append_config:
         description: 'Extra literal CONFIG_* lines injected into the defconfig'
         required: false
-        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_TCP_CONG_BBR=y,CONFIG_DEFAULT_BBR=y,CONFIG_KASAN=n,CONFIG_KASAN_HW_TAGS=n,CONFIG_UBSAN=n,CONFIG_SLUB_DEBUG=n,CONFIG_SCHED_DEBUG=n,CONFIG_DEBUG_LIST=n,CONFIG_FTRACE=n,CONFIG_PROFILING=n,CONFIG_DEBUG_KERNEL=n,CONFIG_DEBUG_INFO=n"
+        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_TCP_CONG_BBR=y,CONFIG_DEFAULT_BBR=y,CONFIG_PROVE_LOCKING=n,CONFIG_WQ_POWER_EFFICIENT_DEFAULT=n,CONFIG_KASAN=n,CONFIG_KASAN_HW_TAGS=n,CONFIG_UBSAN=n,CONFIG_SLUB_DEBUG=n,CONFIG_SCHED_DEBUG=n,CONFIG_DEBUG_LIST=n,CONFIG_FTRACE=n,CONFIG_PROFILING=n,CONFIG_DEBUG_KERNEL=n,CONFIG_DEBUG_INFO=n"
       ccache:
         description: 'Accelerate with ccache.'
         type: boolean
@@ -381,8 +381,9 @@ jobs:
           	seq_puts(m, saved_command_line); seq_putc(m, '\n'); return 0;
           }"""
               pattern = r'(static\s+)?int\s+cmdline_proc_show\s*\(\s*struct\s+seq_file\s*\*\s*m\s*,\s*void\s*\*\s*v\s*\)'
-              if "replace_str" not in content: content = helper_code + "\n" + content
-              new_content, success = replace_c_func_overkill(content, pattern, replacement_func)
+              
+              combined_replacement = helper_code + "\n" + replacement_func
+              new_content, success = replace_c_func_overkill(content, pattern, combined_replacement)
               if success:
                   with open(cmdline_path, "w") as f: f.write(new_content)
                   print("✅ cmdline.c -> SPOOFED")
@@ -435,8 +436,9 @@ jobs:
           	return 0;
           }"""
               boot_pattern = r'(static\s+)?int\s+boot_config_proc_show\s*\(\s*struct\s+seq_file\s*\*\s*m\s*,\s*void\s*\*\s*v\s*\)'
-              if "#define repl" not in boot_content: boot_content = boot_helper + "\n" + boot_content
-              new_boot_content, success = replace_c_func_overkill(boot_content, boot_pattern, boot_replacement)
+              
+              combined_boot_replacement = boot_helper + "\n" + boot_replacement
+              new_boot_content, success = replace_c_func_overkill(boot_content, boot_pattern, combined_boot_replacement)
               if success:
                   with open(boot_path, "w") as f: f.write(new_boot_content)
                   print("✅ bootconfig.c -> SPOOFED")
