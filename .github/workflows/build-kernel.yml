@@ -45,7 +45,7 @@ on:
       append_config:
         description: 'Extra literal CONFIG_* lines injected into the defconfig'
         required: false
-        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_TCP_CONG_BBR=y,CONFIG_DEFAULT_BBR=y,CONFIG_PROVE_LOCKING=n,CONFIG_WQ_POWER_EFFICIENT_DEFAULT=n,CONFIG_KASAN=n,CONFIG_KASAN_HW_TAGS=n,CONFIG_UBSAN=n,CONFIG_SLUB_DEBUG=n,CONFIG_SCHED_DEBUG=n,CONFIG_DEBUG_LIST=n,CONFIG_FTRACE=n,CONFIG_PROFILING=n,CONFIG_DEBUG_KERNEL=n,CONFIG_DEBUG_INFO=n"
+        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_SCHED_BORE=n"
       ccache:
         description: 'Accelerate with ccache.'
         type: boolean
@@ -67,6 +67,7 @@ jobs:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
       KERNEL_COMMIT: ${{ inputs.kernel_commit }}
+      # JSON mapping updated to include Neutron Clang 24 for unique cache keys
       CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst","neutron clang 24":"neutron-clang-24"}')[inputs.clang_version] }}
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
@@ -98,7 +99,7 @@ jobs:
         run: |
           git config --global --add safe.directory "*"
           git config --global user.email "Antonio_Nelson@proton.me"
-          git config --global user.name "Chor-E"
+          git config --global user.name "Chor-A"
 
       - name: Restore ccache cache
         if: ${{ inputs.ccache }}
@@ -111,11 +112,11 @@ jobs:
             cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
           fail-on-cache-miss: false
 
-      - name: Add 15G swap (Fix for Full LTO OOM)
+      - name: Add 32G swap (Fix for Full LTO OOM)
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
-          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=15360
+          sudo fallocate -l 32G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=32768
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -131,7 +132,7 @@ jobs:
             git checkout ${{ env.KERNEL_COMMIT }}
           fi
 
-      - name: Purge le9uo commits (MGLRU Preparation) & Clean CMDLINE
+      - name: Purge le9uo commits (MGLRU Preparation)
         run: |
           cd work/common
           echo "=== 1. Dynamically Finding and Reverting all le9uo commits ==="
@@ -172,7 +173,6 @@ jobs:
           sed -i '/config CLEAN_LOW_RATIO/,/knob./d' mm/Kconfig 2>/dev/null || true
           sed -i '/clean_low_ratio/d' mm/Kconfig 2>/dev/null || true
           echo "✅ Hard purge complete!"
-          
 
       - name: Clean Hardcoded NoMount & Integrate Official NoMount (Method 3 - Dev Branch)
         run: |
@@ -206,7 +206,7 @@ jobs:
           echo "CONFIG_NOMOUNT=y" >> arch/arm64/configs/gki_defconfig
           echo "✅ Old NoMount wiped and Official Method 3 (dev branch) applied!"
 
-      - name: Apply SUSFS, Custom Patches & Direct Code Spoofing (Advanced Engine)
+      - name: Apply SUSFS, Custom Patches & Direct Code Spoofing
         run: |
           cd work/common
 
@@ -250,31 +250,13 @@ jobs:
           done
           echo "✅ All .patch files applied successfully!"
 
-          echo "=== 2.5 Fixing Neutron Clang 24 Strict Compiler Errors ==="
-          if [ -f "arch/arm64/kvm/perf.c" ]; then
-            sed -i '1i extern int perf_num_counters(void);' arch/arm64/kvm/perf.c
-            echo "✅ Injected perf_num_counters into arch/arm64/kvm/perf.c"
-          fi
-          sed -i 's/-Werror=implicit-function-declaration//g' Makefile
-          sed -i 's/-Werror=strict-prototypes//g' Makefile
-          sed -i 's/-Werror=implicit-int//g' Makefile
-          echo "✅ Stripped legacy Clang -Werrors from Makefile"
-
-          echo "=== 3. Directly Injecting Spoof Modifications via Python ==="
+          echo "=== 3. Directly Injecting Spoof Modifications via Python (C89 Compliant) ==="
           python3 - << 'EOF'
           import os
           import re
 
-          def inject_header_safely(content, header):
-              if f'#include {header}' not in content:
-                  match = re.search(r'#include\s+<[^>]+>', content)
-                  if match:
-                      return content[:match.end()] + f'\n#include {header}' + content[match.end():]
-                  return f'#include {header}\n' + content
-              return content
-
           def replace_c_func_overkill(content, func_regex, new_func_code):
-              match = re.search(func_regex, content, re.MULTILINE | re.DOTALL)
+              match = re.search(func_regex, content)
               if not match:
                   return content, False
               
@@ -311,20 +293,19 @@ jobs:
                   elif state == IN_BLOCK_COMMENT:
                       if c == '*' and i + 1 < length and content[i+1] == '/': state = NORMAL; i += 1
                   i += 1
-              
-              if end_idx != -1: 
-                  return content[:start_idx] + new_func_code + content[end_idx:], True
+              if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
               return content, False
 
-          # 1. SPOOFING CMDLINE
           cmdline_path = "fs/proc/cmdline.c"
           if os.path.exists(cmdline_path):
               with open(cmdline_path, "r") as f: content = f.read()
-              
-              for h in ['<linux/slab.h>', '<linux/string.h>', '<linux/cred.h>', '<linux/spinlock.h>', '<linux/compiler.h>']:
-                  content = inject_header_safely(content, h)
-                  
               helper_code = r"""
+          #include <linux/slab.h>
+          #include <linux/string.h>
+          #include <linux/cred.h>
+          #include <linux/spinlock.h>
+          #include <linux/compiler.h>
+
           static void replace_str(char *buf, size_t max_len, const char *search, const char *replace)
           {
           	char *p = buf;
@@ -377,27 +358,24 @@ jobs:
           	}
           	seq_puts(m, saved_command_line); seq_putc(m, '\n'); return 0;
           }"""
-              pattern = r'(static\s+)?int\s+cmdline_proc_show\s*\(\s*struct\s+seq_file\s*\*\s*m\s*,\s*void\s*\*\s*v\s*\)'
-              
-              combined_replacement = helper_code + "\n" + replacement_func
-              new_content, success = replace_c_func_overkill(content, pattern, combined_replacement)
+              pattern = r'static int cmdline_proc_show\(struct seq_file \*m, void \*v\)\s*'
+              if "replace_str" not in content: content = helper_code + "\n" + content
+              new_content, success = replace_c_func_overkill(content, pattern, replacement_func)
               if success:
                   with open(cmdline_path, "w") as f: f.write(new_content)
                   print("✅ cmdline.c -> SPOOFED")
-              else:
-                  print("⚠️ Failed to spoof cmdline.c")
 
-          # 2. SPOOFING BOOTCONFIG
           boot_path = "fs/proc/bootconfig.c"
           if os.path.exists(boot_path):
               with open(boot_path, "r") as f: boot_content = f.read()
-              for h in ['<linux/string.h>', '<linux/cred.h>', '<linux/spinlock.h>', '<linux/slab.h>', '<linux/compiler.h>']:
-                  boot_content = inject_header_safely(boot_content, h)
-
               boot_helper = r"""
-          #ifndef repl
+          #include <linux/string.h>
+          #include <linux/cred.h>
+          #include <linux/spinlock.h>
+          #include <linux/slab.h>
+          #include <linux/compiler.h>
+
           #define repl(B, L, S, R) do{ char *p=B; while((p=strstr(p,S))!=NULL) { size_t s_l=strlen(S), r_l=strlen(R), tail=strlen(p+s_l); memmove(p+r_l, p+s_l, tail+1); memcpy(p, R, r_l); p+=r_l; } }while(0)
-          #endif
           """
               boot_replacement = r"""static int boot_config_proc_show(struct seq_file *m, void *v)
           {
@@ -432,34 +410,32 @@ jobs:
           	}
           	return 0;
           }"""
-              boot_pattern = r'(static\s+)?int\s+boot_config_proc_show\s*\(\s*struct\s+seq_file\s*\*\s*m\s*,\s*void\s*\*\s*v\s*\)'
-              
-              combined_boot_replacement = boot_helper + "\n" + boot_replacement
-              new_boot_content, success = replace_c_func_overkill(boot_content, boot_pattern, combined_boot_replacement)
+              boot_pattern = r'static int boot_config_proc_show\(struct seq_file \*m, void \*v\)\s*'
+              if "repl(B, L, S, R)" not in boot_content: boot_content = boot_helper + "\n" + boot_content
+              new_boot_content, success = replace_c_func_overkill(boot_content, boot_pattern, boot_replacement)
               if success:
                   with open(boot_path, "w") as f: f.write(new_boot_content)
                   print("✅ bootconfig.c -> SPOOFED")
 
-          # 3. SPOOFING ARRAY.C (Task State)
           array_path = "fs/proc/array.c"
           if os.path.exists(array_path):
               with open(array_path, "r") as f: array_content = f.read()
-              array_content = inject_header_safely(array_content, '<linux/cred.h>')
+              if '#include <linux/cred.h>' not in array_content:
+                  array_content = array_content.replace('#include <linux/fs_struct.h>', '#include <linux/fs_struct.h>\n#include <linux/cred.h>')
               
-              tstate_regex = r'seq_puts\s*\(\s*m\s*,\s*"State:\\t"\s*\)\s*;\s*seq_puts\s*\(\s*m\s*,\s*get_task_state\s*\(\s*p\s*\)\s*\)\s*;'
+              tstate_target = 'seq_puts(m, "State:\\t");\n\tseq_puts(m, get_task_state(p));'
               tstate_repl = 'seq_puts(m, "State:\\t");\n\tif (__kuid_val(current_uid()) >= 10000 && (*get_task_state(p) == \'t\' || *get_task_state(p) == \'T\'))\n\t\tseq_puts(m, "S (sleeping)");\n\telse\n\t\tseq_puts(m, get_task_state(p));'
               
-              if re.search(tstate_regex, array_content):
-                  array_content = re.sub(tstate_regex, tstate_repl, array_content)
+              if tstate_target in array_content:
+                  array_content = array_content.replace(tstate_target, tstate_repl)
                   with open(array_path, "w") as f: f.write(array_content)
-                  print("✅ array.c -> SPOOFED")
+                  print("✅ array.c -> SPOOFED (C89 Compliant)")
 
-          # 4. SPOOFING SELINUX SERVICES.C
           services_path = "security/selinux/ss/services.c"
           if os.path.exists(services_path):
               with open(services_path, "r") as f: serv_content = f.read()
 
-              target_av_call_regex = r'(context_struct_compute_av\s*\(\s*policydb\s*,\s*scontext\s*,\s*tcontext\s*,\s*tclass\s*,\s*avd\s*,\s*NULL\s*\)\s*;)'
+              target_av_call_regex = r'(context_struct_compute_av\(policydb,\s*scontext,\s*tcontext,\s*tclass,\s*avd,\s*NULL\);)'
               
               av_hook_injection = r"""\1
 
@@ -492,7 +468,7 @@ jobs:
               if "SAFED AVC BYPASS" not in serv_content:
                   serv_content = re.sub(target_av_call_regex, av_hook_injection, serv_content, count=1)
                   
-                  engine_marker = r'#include\s+"policycap_names\.h"'
+                  engine_marker = '#include "policycap_names.h"'
                   engine_code = (
                       '#include "policycap_names.h"\n\n'
                       '/* --- INJECTED: SECURE SELINUX ID SPOOF --- */\n'
@@ -517,17 +493,16 @@ jobs:
                       '\tspin_unlock(&spoof_update_lock);\n'
                       '\tif (old_ids) kfree_rcu(old_ids, rcu);\n}\n'
                   )
-                  serv_content = re.sub(engine_marker, engine_code, serv_content, count=1)
+                  serv_content = serv_content.replace(engine_marker, engine_code, 1)
 
-                  commit_marker = r'(security_load_policycaps\s*\(\s*state\s*,\s*newpolicy\s*\)\s*;)'
-                  commit_code = r'\1\n\tupdate_spoof_ids(newpolicy);'
-                  serv_content = re.sub(commit_marker, commit_code, serv_content, count=1)
+                  commit_marker = 'security_load_policycaps(state, newpolicy);'
+                  commit_code = 'security_load_policycaps(state, newpolicy);\n\tupdate_spoof_ids(newpolicy);'
+                  serv_content = serv_content.replace(commit_marker, commit_code, 1)
 
                   with open(services_path, "w") as f: f.write(serv_content)
                   print("✅ services.c -> SPOOFED")
-
           EOF
-          echo "✅ ADVANCED PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
+          echo "✅ PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
 
       - name: Setting up ReSukiSU
         run: |
@@ -781,9 +756,11 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/neutron-clang
           cd $GITHUB_WORKSPACE/neutron-clang
           
+          # Antman ko local file ki tarah download karke permission dena zaroori hai
           curl -sO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
           chmod +x antman
           
+          # Ab locally antman se sync aur patch run karein
           ./antman -S
           ./antman --patch=glibc
           
@@ -916,6 +893,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
