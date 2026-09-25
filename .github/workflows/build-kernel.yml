@@ -16,7 +16,7 @@ on:
       kernel_repo:
         description: 'Kernel source repository (full URL)'
         required: false
-        default: "https://github.com/Steambot12/Templar-Kernel-GKI-5.10"
+        default: "https://github.com/Chor-E/Templar-Kernel-GKI-5.10"
       kernel_branch:
         description: 'Kernel source branch'
         required: false
@@ -771,21 +771,9 @@ jobs:
           
       - name: Build kernel
         run: |
-          echo "=== Phase 1: Injecting PGO Instrumentation Flags ==="
-          
-          # 1. Defconfig mein PGO enable karna
-          echo "CONFIG_PGO_CLANG=y" >> work/common/arch/arm64/configs/gki_defconfig
-          
-          # 2. Safe method: Environment variable se flag pass karna
-          export KCFLAGS="-fprofile-generate"
-          
-          echo "✅ Real PGO flags injected safely via Environment Variable!"
-          
-          # 3. Normal Build start karna
           chmod +x ./build-kernel.sh
           ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
 
-          
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
           BOOT_IMG_URL: "https://www.dropbox.com/scl/fi/l8tfppfqkvvbkgvzjq2me/Evolutionboot.img?rlkey=ww8zq6dvo4pok645gvu85khry&st=3hncwbd1&dl=1"
