@@ -771,8 +771,16 @@ jobs:
           
       - name: Build kernel
         run: |
+          set -o pipefail
+          echo "=== Phase 1: Data Collection Build (AOSP Clang 19) ==="
+          
+          # 1. Linker ki warning spam ko chup karwana (To prevent GitHub Log Overflow)
+          sed -i 's/--orphan-handling=warn//g' work/common/Makefile
+          
+          # 2. Build start karna aur baaki bachi hui PGO noise ko screen se filter out karna
           chmod +x ./build-kernel.sh
-          ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }}
+          ./build-kernel.sh ${{ inputs.ccache && '--ccache' || '' }} 2>&1 | grep -v "__llvm_prf_"
+          
 
       - name: Fail-Safe Repack with Stock boot.img Parameters & Secure AVB Signature 🔒
         env:
