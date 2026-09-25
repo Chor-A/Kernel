@@ -36,7 +36,7 @@ DEFCONFIG_FRAGMENT=${DEFCONFIG_FRAGMENT:-}
 DEFCONFIG_FRAGMENT_EXCLUDE=${DEFCONFIG_FRAGMENT_EXCLUDE:-}
 APPEND_BUILD_ENV=${APPEND_BUILD_ENV:-}
 APPEND_CONFIG=${APPEND_CONFIG:-}
-LTO=${LTO:-thin} # Default LTO set to full
+LTO=${LTO:-full} # Default LTO set to full
 
 info() { printf '\033[1;34m[INFO]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
