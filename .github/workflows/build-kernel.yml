@@ -776,7 +776,7 @@ jobs:
           echo "CONFIG_PGO_CLANG=y" >> work/common/arch/arm64/configs/gki_defconfig
           
           # 2. Makefile mein compiler ko data record karne ka flag dena
-          sed -i '/^KBUILD_CFLAGS\s*:=/ s/$/ -fprofile-generate/' work/common/Makefile
+          export KCFLAGS="-fprofile-generate"
           
           echo "✅ Real PGO flags injected successfully!"
           
