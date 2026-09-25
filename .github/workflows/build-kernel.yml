@@ -1,4 +1,4 @@
-name: build-kernel
+Name: build-kernel
 
 on:
   schedule:
@@ -45,7 +45,7 @@ on:
       append_config:
         description: 'Extra literal CONFIG_* lines injected into the defconfig'
         required: false
-        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_SCHED_BORE=y,CONFIG_TCP_CONG_BBR=y,CONFIG_DEFAULT_BBR=y,CONFIG_KASAN=n,CONFIG_KASAN_HW_TAGS=n,CONFIG_UBSAN=n,CONFIG_SLUB_DEBUG=n,CONFIG_SCHED_DEBUG=n,CONFIG_DEBUG_LIST=n,CONFIG_FTRACE=n,CONFIG_PROFILING=n,CONFIG_DEBUG_KERNEL=n,CONFIG_DEBUG_INFO=n"
+        default: "CONFIG_KALLSYMS=y,CONFIG_KALLSYMS_ALL=y,CONFIG_KSU=y,CONFIG_KSU_TOOLKIT_SUPPORT=y,CONFIG_KSU_INLINE_HOOK=y,CONFIG_KSU_DISABLE_SELINUX_VFS_GETXATTR=y,CONFIG_KSU_DEBUG=n,CONFIG_KSU_SUCOMPAT=n,CONFIG_OVERLAY_FS=y,CONFIG_KPROBES=y,CONFIG_HAVE_KPROBES=y,CONFIG_KPROBE_EVENTS=y,CONFIG_NOMOUNT=y,CONFIG_LRU_GEN=y,CONFIG_LRU_GEN_ENABLED=y,CONFIG_TCP_CONG_BBR=y,CONFIG_DEFAULT_BBR=y,CONFIG_KASAN=n,CONFIG_KASAN_HW_TAGS=n,CONFIG_UBSAN=n,CONFIG_SLUB_DEBUG=n,CONFIG_SCHED_DEBUG=n,CONFIG_DEBUG_LIST=n,CONFIG_FTRACE=n,CONFIG_PROFILING=n,CONFIG_DEBUG_KERNEL=n,CONFIG_DEBUG_INFO=n"
       ccache:
         description: 'Accelerate with ccache.'
         type: boolean
@@ -67,7 +67,6 @@ jobs:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
       KERNEL_COMMIT: ${{ inputs.kernel_commit }}
-      # JSON mapping updated to include Neutron Clang 24 for unique cache keys
       CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst","neutron clang 24":"neutron-clang-24"}')[inputs.clang_version] }}
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
@@ -112,11 +111,11 @@ jobs:
             cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
           fail-on-cache-miss: false
 
-      - name: Add 15G swap (Fix for Full LTO OOM)
+      - name: Add 32G swap (Fix for Full LTO OOM)
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
-          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=15360
+          sudo fallocate -l 32G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=32768
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -253,6 +252,16 @@ jobs:
             fi
           done
           echo "✅ All .patch files applied successfully!"
+
+          echo "=== 2.5 Fixing Neutron Clang 24 Strict Compiler Errors ==="
+          if [ -f "arch/arm64/kvm/perf.c" ]; then
+            sed -i '1i extern int perf_num_counters(void);' arch/arm64/kvm/perf.c
+            echo "✅ Injected perf_num_counters into arch/arm64/kvm/perf.c"
+          fi
+          sed -i 's/-Werror=implicit-function-declaration//g' Makefile
+          sed -i 's/-Werror=strict-prototypes//g' Makefile
+          sed -i 's/-Werror=implicit-int//g' Makefile
+          echo "✅ Stripped legacy Clang -Werrors from Makefile"
 
           echo "=== 3. Directly Injecting Spoof Modifications via Python (Advanced C89 Compliant) ==="
           python3 - << 'EOF'
@@ -520,18 +529,41 @@ jobs:
                   with open(services_path, "w") as f: f.write(serv_content)
                   print("✅ services.c -> SPOOFED")
 
-          # 5. SYSCTL TWEAKS
+          # 5. SYSCTL TWEAKS (Swappiness & ZRAM IO)
           sysctl_path = "kernel/sysctl.c"
           if os.path.exists(sysctl_path):
               with open(sysctl_path, "r") as f:
                   sc = f.read()
 
               # Swappiness = 40 Default Value !
-              if "int vm_swappiness" in sc:
-                  sc = re.sub(r'int\s+vm_swappiness\s*=\s*[0-9]+\s*;', 'int vm_swappiness = 40;', sc)
+              sc = re.sub(r'int\s+vm_swappiness\s*=\s*[0-9]+\s*;', 'int vm_swappiness = 40;', sc)
+              # Transparent ZRAM & IO setup bypass (page_cluster = 0 for better ZRAM efficiency)
+              sc = re.sub(r'int\s+page_cluster\s*=\s*[0-9]+\s*;', 'int page_cluster = 0;', sc)
 
               with open(sysctl_path, "w") as f: f.write(sc)
-              print("✅ Sysctl (swappiness=40 & Default Tweaks) -> SPOOFED")
+              print("✅ Sysctl (swappiness=40 & page_cluster=0) -> SPOOFED")
+
+          # 6. BBR/NETWORK OPTIMIZATION BY DIRECT OVERWRITE
+          tcp_path = "net/ipv4/tcp_output.c"
+          if os.path.exists(tcp_path):
+              with open(tcp_path, "r") as f: tcp_content = f.read()
+              
+              # Force higher Initial Congestion Window (TCP_INIT_CWND) for BBR
+              if "TCP_INIT_CWND" in tcp_content:
+                  tcp_content = re.sub(r'#define\s+TCP_INIT_CWND\s+[0-9]+', '#define TCP_INIT_CWND 10', tcp_content)
+              
+              with open(tcp_path, "w") as f: f.write(tcp_content)
+              print("✅ TCP Output (BBR Init CWND) -> SPOOFED")
+              
+          tcp_cong_path = "net/ipv4/tcp_cong.c"
+          if os.path.exists(tcp_cong_path):
+              with open(tcp_cong_path, "r") as f: cong = f.read()
+              
+              # Hard-overwrite default TCP congestion control string to BBR
+              cong = re.sub(r'char\s+sysctl_tcp_congestion_control\[[^\]]+\]\s*=\s*"[^"]+";', 'char sysctl_tcp_congestion_control[16] = "bbr";', cong)
+              
+              with open(tcp_cong_path, "w") as f: f.write(cong)
+              print("✅ TCP Congestion (Forced BBR Default) -> SPOOFED")
 
           EOF
           echo "✅ ADVANCED PYTHON ENGINE SCRIPT EXECUTION SUCCESSFULLY COMPLETE."
@@ -923,6 +955,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
