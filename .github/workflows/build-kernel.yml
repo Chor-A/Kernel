@@ -133,7 +133,7 @@ jobs:
           fi
 
 
-      - name: Apply Real LZ4, Swappiness 40 & Ultimate 'none' Scheduler Lock
+      - name: Apply Real LZ4, Swappiness 40 & Force 'none' Scheduler
         run: |
           cd work/common
 
@@ -142,31 +142,30 @@ jobs:
 
           echo "=== 2. Hardcode Real LZ4 Compressor in Kernel ==="
           echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> arch/arm64/configs/gki_defconfig
-          
-          echo "=== 3. Disable Extra Schedulers to Force 'none' Safely ==="
+
+          echo "=== 3. Force 'none' Scheduler (Disable All Extra Schedulers) ==="
           sed -i 's/CONFIG_MQ_IOSCHED_DEADLINE=y/# CONFIG_MQ_IOSCHED_DEADLINE is not set/g' arch/arm64/configs/gki_defconfig
           sed -i 's/CONFIG_MQ_IOSCHED_KYBER=y/# CONFIG_MQ_IOSCHED_KYBER is not set/g' arch/arm64/configs/gki_defconfig
           sed -i 's/CONFIG_IOSCHED_BFQ=y/# CONFIG_IOSCHED_BFQ is not set/g' arch/arm64/configs/gki_defconfig
           sed -i 's/CONFIG_MQ_IOSCHED_ADIOS=y/# CONFIG_MQ_IOSCHED_ADIOS is not set/g' arch/arm64/configs/gki_defconfig
           sed -i 's/CONFIG_MQ_IOSCHED_SSG=y/# CONFIG_MQ_IOSCHED_SSG is not set/g' arch/arm64/configs/gki_defconfig
-          
-          echo "=== 4. Ultimate Lock for ZRAM ==="
+          echo "✅ Extra schedulers disabled. Default will be 'none'."
+
+          echo "=== 4. Lock ZRAM to LZ4 (C89 Compliant) ==="
           python3 - << 'EOF'
           import os, re
 
-          # Lock ZRAM to LZ4 (C89 Compliant)
           zram_path = "drivers/block/zram/zram_drv.c"
           if os.path.exists(zram_path):
               with open(zram_path, "r") as f: content = f.read()
-              
               pattern = r"(static ssize_t comp_algorithm_store[\s\S]*?size_t sz;)"
               if re.search(pattern, content):
                   content = re.sub(pattern, r"\1\n\n\t/* BLOCK ROM ZRAM OVERWRITE */\n\treturn len;", content)
                   with open(zram_path, "w") as f: f.write(content)
                   print("✅ ZRAM LZ4 strictly locked.")
           EOF
-           
           
+              
       - name: Purge le9uo commits (MGLRU Preparation)
         run: |
           cd work/common
