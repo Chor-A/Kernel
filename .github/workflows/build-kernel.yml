@@ -20,7 +20,7 @@ on:
       kernel_branch:
         description: 'Kernel source branch'
         required: false
-        default: "Linux3-Staging"
+        default: "Linux2-Staging"
       kernel_commit:
         description: 'Kernel source commit'
         required: false
@@ -111,16 +111,15 @@ jobs:
             cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
           fail-on-cache-miss: false
 
-      - name: Add 15G swap (Fix for Full LTO OOM)
+      - name: Add 32G swap (Fix for Full LTO OOM)
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
-          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=15360
+          sudo fallocate -l 32G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=32768
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
           free -h
-
 
       - name: Clone Kernel Source
         run: |
@@ -132,37 +131,41 @@ jobs:
             git checkout ${{ env.KERNEL_COMMIT }}
           fi
 
-      - name: Apply Real LZ4, Kyber & Swappiness 40
+      - name: Apply Real LZ4, Swappiness 40 & Force 'none' Scheduler
         run: |
           cd work/common
 
-          echo "=== 1. Real Swappiness Change ==="
-          sed -i 's/vm.swappiness=5/vm.swappiness=40/g' arch/arm64/configs/gki_defconfig
-          
-          echo "=== 2. Enable Real Kyber Scheduler ==="
-          echo "CONFIG_MQ_IOSCHED_KYBER=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IOSCHED_KYBER=y" >> arch/arm64/configs/gki_defconfig
+          echo "=== 1. Real Swappiness Change & Force 'none' Scheduler ==="
+          sed -i 's/vm.swappiness=5/vm.swappiness=40 elevator=none/g' arch/arm64/configs/gki_defconfig
 
-          echo "=== 3. Hardcode Real LZ4 Compressor in Kernel ==="
+          echo "=== 2. Hardcode Real LZ4 Compressor in Kernel ==="
           echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> arch/arm64/configs/gki_defconfig
           
-          echo "=== 4. Lock ZRAM (Block ROM from changing to ZSTD) ==="
+          echo "=== 3. Lock ZRAM & I/O Scheduler (C89 Compliant) ==="
           python3 - << 'EOF'
           import os
 
+          # A) Lock ZRAM to LZ4 based on zram_drv.c[span_2](start_span)[span_2](end_span)
           zram_path = "drivers/block/zram/zram_drv.c"
           if os.path.exists(zram_path):
-              with open(zram_path, "r") as f:
-                  content = f.read()
-
+              with open(zram_path, "r") as f: content = f.read()
               target = "strlcpy(compressor, buf, sizeof(compressor));"
               if target in content:
-                  injected_code = "/* HARD-LOCK COMPRESSOR: IGNORE ROM WRITES */\n\treturn len;\n\n\t" + target
+                  injected_code = "/* BLOCK ROM ZRAM OVERWRITE */\n\treturn len;\n\n\t" + target
                   content = content.replace(target, injected_code)
-                  
-                  with open(zram_path, "w") as f:
-                      f.write(content)
-                  print("✅ Real LZ4 strictly locked. ROM overwrite blocked (C89 Compliant)!")
+                  with open(zram_path, "w") as f: f.write(content)
+                  print("✅ ZRAM LZ4 strictly locked.")
+
+          # B) Lock I/O Scheduler to 'none' based on elevator.c[span_3](start_span)[span_3](end_span)
+          elv_path = "block/elevator.c"
+          if os.path.exists(elv_path):
+              with open(elv_path, "r") as f: content = f.read()
+              target = "int ret;\n\n\tif (!elv_support_iosched(q))"
+              if target in content:
+                  injected_code = "int ret;\n\n\t/* BLOCK ROM SCHEDULER OVERWRITE */\n\treturn count;\n\n\tif (!elv_support_iosched(q))"
+                  content = content.replace(target, injected_code)
+                  with open(elv_path, "w") as f: f.write(content)
+                  print("✅ I/O Scheduler strictly locked to 'none'.")
           EOF
 
       - name: Purge le9uo commits (MGLRU Preparation)
@@ -926,6 +929,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU, SuSFS. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU, SuSFS, Swappiness 40 & Strict Locks ('none' I/O + LZ4 ZRAM). $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
