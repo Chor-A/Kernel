@@ -20,7 +20,7 @@ on:
       kernel_branch:
         description: 'Kernel source branch'
         required: false
-        default: "Linux2-Staging"
+        default: "Linux3-Staging"
       kernel_commit:
         description: 'Kernel source commit'
         required: false
@@ -111,15 +111,16 @@ jobs:
             cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
           fail-on-cache-miss: false
 
-      - name: Add 32G swap (Fix for Full LTO OOM)
+      - name: Add 15G swap (Fix for Full LTO OOM)
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
-          sudo fallocate -l 32G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=32768
+          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=15360
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
           free -h
+
 
       - name: Clone Kernel Source
         run: |
@@ -929,6 +930,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU, SuSFS, Swappiness 40 & Strict Locks ('none' I/O + LZ4 ZRAM). $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU, SuSFS. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
