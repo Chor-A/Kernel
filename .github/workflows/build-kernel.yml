@@ -210,6 +210,9 @@ jobs:
           if os.path.exists(elv_path):
               with open(elv_path, "r") as f: content = f.read()
               
+              # ++ ADD THIS LINE ++ (Safely bypasses Clang's unused-function strictness)
+              content = '#pragma GCC diagnostic ignored "-Wunused-function"\n' + content
+              
               # 1. Block kernel from setting a default during boot
               elv_init_pattern = r"void\s+elevator_init_mq\([^)]*\)\s*"
               elv_init_new = """void elevator_init_mq(struct request_queue *q)
