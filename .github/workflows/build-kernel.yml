@@ -20,7 +20,7 @@ on:
       kernel_branch:
         description: 'Kernel source branch'
         required: false
-        default: "Linux3-Staging"
+        default: "Linux2-Staging"
       kernel_commit:
         description: 'Kernel source commit'
         required: false
@@ -67,7 +67,6 @@ jobs:
       KERNEL_REPO: ${{ inputs.kernel_repo }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
       KERNEL_COMMIT: ${{ inputs.kernel_commit }}
-      # JSON mapping updated to include Neutron Clang 24 for unique cache keys
       CLANG_ASSET: ${{ fromJSON('{"clang 14":"clang-r450784e-linux-x86.tar.zst","clang 19":"clang-r536225-linux-x86.tar.zst","neutron clang 24":"neutron-clang-24"}')[inputs.clang_version] }}
       DEFCONFIG_FRAGMENT_EXCLUDE: ${{ inputs.defconfig_fragment_exclude }}
       APPEND_BUILD_ENV: ${{ inputs.append_build_env }}
@@ -112,17 +111,16 @@ jobs:
             cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
           fail-on-cache-miss: false
 
-      - name: Add 15G swap (Fix for Full LTO OOM)
+      - name: Add 32G swap (Fix for Full LTO OOM)
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
-          # Fallback to dd with optimized 16M block size and exact 15GB count (960 * 16MB = 15360MB)
-          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=16M count=960
+          sudo fallocate -l 32G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=32768
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
           free -h
-          
+
       - name: Clone Kernel Source
         run: |
           mkdir -p work
@@ -156,18 +154,14 @@ jobs:
               with open(zram_path, "r") as f:
                   content = f.read()
 
-              target = "static ssize_t comp_algorithm_store("
+              target = "strlcpy(compressor, buf, sizeof(compressor));"
               if target in content:
-                  target_idx = content.find(target)
-                  brace_idx = content.find("{", target_idx)
+                  injected_code = "/* HARD-LOCK COMPRESSOR: IGNORE ROM WRITES */\n\treturn len;\n\n\t" + target
+                  content = content.replace(target, injected_code)
                   
-                  if brace_idx != -1:
-                      injected_code = "\n\t/* HARD-LOCK COMPRESSOR: IGNORE ROM WRITES */\n\treturn len;\n"
-                      content = content[:brace_idx+1] + injected_code + content[brace_idx+1:]
-                      
-                      with open(zram_path, "w") as f:
-                          f.write(content)
-                      print("✅ Real LZ4 strictly locked. ROM overwrite blocked!")
+                  with open(zram_path, "w") as f:
+                      f.write(content)
+                  print("✅ Real LZ4 strictly locked. ROM overwrite blocked (C89 Compliant)!")
           EOF
 
       - name: Purge le9uo commits (MGLRU Preparation)
