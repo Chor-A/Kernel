@@ -319,6 +319,9 @@ jobs:
           if os.path.exists(freq_path):
               with open(freq_path, "r") as f: content = f.read()
               
+              # ++ ADD THIS PRAGMA LINE ++
+              content = '#pragma GCC diagnostic ignored "-Wunused-function"\n' + content
+              
               freq_pattern = r"static\s+ssize_t\s+store_scaling_governor\([^)]*\)\s*"
               freq_new_func = """static ssize_t store_scaling_governor(struct cpufreq_policy *policy, const char *buf, size_t count)
           {
@@ -966,11 +969,9 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/neutron-clang
           cd $GITHUB_WORKSPACE/neutron-clang
           
-          # Antman ko local file ki tarah download karke permission dena zaroori hai
           curl -sO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
           chmod +x antman
           
-          # Ab locally antman se sync aur patch run karein
           ./antman -S
           ./antman --patch=glibc
           
