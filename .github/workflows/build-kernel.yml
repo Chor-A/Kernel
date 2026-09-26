@@ -132,50 +132,41 @@ jobs:
             git checkout ${{ env.KERNEL_COMMIT }}
           fi
 
-      - name: Apply Real LZ4, Swappiness 40 & Force 'none' Scheduler
+
+      - name: Apply Real LZ4, Swappiness 40 & Safe 'none' Scheduler
         run: |
           cd work/common
 
-          echo "=== 1. Real Swappiness Change ==="
-          sed -i 's/vm.swappiness=5/vm.swappiness=40 elevator=none/g' arch/arm64/configs/gki_defconfig
+          echo "=== 1. Safe Swappiness Change ==="
+          sed -i 's/vm.swappiness=5/vm.swappiness=40/g' arch/arm64/configs/gki_defconfig
 
-          echo "=== 2. Hardcode Real LZ4 Compressor in Kernel ==="
+          echo "=== 2. Disable Extra Schedulers to Force 'none' Safely ==="
+          # Disable all schedulers in defconfig so kernel naturally defaults to 'none' without C-code hacks
+          sed -i 's/CONFIG_MQ_IOSCHED_DEADLINE=y/# CONFIG_MQ_IOSCHED_DEADLINE is not set/g' arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_MQ_IOSCHED_KYBER=y/# CONFIG_MQ_IOSCHED_KYBER is not set/g' arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_IOSCHED_BFQ=y/# CONFIG_IOSCHED_BFQ is not set/g' arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_MQ_IOSCHED_ADIOS=y/# CONFIG_MQ_IOSCHED_ADIOS is not set/g' arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_MQ_IOSCHED_SSG=y/# CONFIG_MQ_IOSCHED_SSG is not set/g' arch/arm64/configs/gki_defconfig
+
+          echo "=== 3. Hardcode Real LZ4 Compressor in Kernel ==="
           echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> arch/arm64/configs/gki_defconfig
           
-          echo "=== 3. Lock ZRAM & I/O Scheduler (C89 Compliant) ==="
+          echo "=== 4. Lock ZRAM (C89 Compliant - Blocks ROM Overwrite) ==="
           python3 - << 'EOF'
           import os, re
 
-          # A) Lock ZRAM to LZ4 (Using your zram_drv.txt structure)
           zram_path = "drivers/block/zram/zram_drv.c"
           if os.path.exists(zram_path):
               with open(zram_path, "r") as f: content = f.read()
               
-              # Capture exactly up to "size_t sz;" and inject safely after it
+              # Capture exactly up to "size_t sz;" and inject safely after it to avoid C89 errors
               pattern = r"(static ssize_t comp_algorithm_store[\s\S]*?size_t sz;)"
               if re.search(pattern, content):
                   content = re.sub(pattern, r"\1\n\n\t/* BLOCK ROM ZRAM OVERWRITE */\n\treturn len;", content)
                   with open(zram_path, "w") as f: f.write(content)
-                  print("✅ ZRAM LZ4 strictly locked.")
-
-          # B) Lock I/O Scheduler to 'none' globally (Using your elevator.txt structure)
-          elv_path = "block/elevator.c"
-          if os.path.exists(elv_path):
-              with open(elv_path, "r") as f: content = f.read()
-              
-              # 1. Block kernel from setting a default during boot (Capture up to "int err;")
-              pattern1 = r"(void elevator_init_mq\(struct request_queue \*q\)[\s\S]*?int err;)"
-              if re.search(pattern1, content):
-                  content = re.sub(pattern1, r"\1\n\n\t/* FORCE 'NONE' SCHEDULER GLOBALLY */\n\treturn;", content)
-                  
-              # 2. Block user-space/ROM from overriding it later (Capture up to "int ret;")
-              pattern2 = r"(ssize_t elv_iosched_store[\s\S]*?int ret;)"
-              if re.search(pattern2, content):
-                  content = re.sub(pattern2, r"\1\n\n\t/* BLOCK ROM SCHEDULER OVERWRITE */\n\treturn count;", content)
-                  
-              with open(elv_path, "w") as f: f.write(content)
-              print("✅ I/O Scheduler globally and strictly locked to 'none'.")
+                  print("✅ ZRAM LZ4 strictly locked against ROM changes.")
           EOF
+          
           
       - name: Purge le9uo commits (MGLRU Preparation)
         run: |
