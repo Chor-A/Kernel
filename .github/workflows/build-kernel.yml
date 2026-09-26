@@ -20,7 +20,7 @@ on:
       kernel_branch:
         description: 'Kernel source branch'
         required: false
-        default: "Linux2-Staging"
+        default: "Linux3-Staging"
       kernel_commit:
         description: 'Kernel source commit'
         required: false
