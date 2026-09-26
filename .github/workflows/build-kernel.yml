@@ -116,12 +116,13 @@ jobs:
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
-          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=15360
+          # Fallback to dd with optimized 16M block size and exact 15GB count (960 * 16MB = 15360MB)
+          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=16M count=960
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
           free -h
-
+          
       - name: Clone Kernel Source
         run: |
           mkdir -p work
