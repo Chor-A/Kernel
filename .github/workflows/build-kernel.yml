@@ -112,11 +112,11 @@ jobs:
             cfx-ccache-${{ env.CLANG_ASSET }}-${{ inputs.kernel_repo }}-
           fail-on-cache-miss: false
 
-      - name: Add 32G swap (Fix for Full LTO OOM)
+      - name: Add 15G swap (Fix for Full LTO OOM)
         run: |
           sudo swapoff -a || true
           sudo rm -f /swapfile
-          sudo fallocate -l 32G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=32768
+          sudo fallocate -l 15G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=15360
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -131,6 +131,43 @@ jobs:
           if [ -n "${{ env.KERNEL_COMMIT }}" ]; then
             git checkout ${{ env.KERNEL_COMMIT }}
           fi
+
+      - name: Apply Real LZ4, Kyber & Swappiness 40
+        run: |
+          cd work/common
+
+          echo "=== 1. Real Swappiness Change ==="
+          sed -i 's/vm.swappiness=5/vm.swappiness=40/g' arch/arm64/configs/gki_defconfig
+          
+          echo "=== 2. Enable Real Kyber Scheduler ==="
+          echo "CONFIG_MQ_IOSCHED_KYBER=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IOSCHED_KYBER=y" >> arch/arm64/configs/gki_defconfig
+
+          echo "=== 3. Hardcode Real LZ4 Compressor in Kernel ==="
+          echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> arch/arm64/configs/gki_defconfig
+          
+          echo "=== 4. Lock ZRAM (Block ROM from changing to ZSTD) ==="
+          python3 - << 'EOF'
+          import os
+
+          zram_path = "drivers/block/zram/zram_drv.c"
+          if os.path.exists(zram_path):
+              with open(zram_path, "r") as f:
+                  content = f.read()
+
+              target = "static ssize_t comp_algorithm_store("
+              if target in content:
+                  target_idx = content.find(target)
+                  brace_idx = content.find("{", target_idx)
+                  
+                  if brace_idx != -1:
+                      injected_code = "\n\t/* HARD-LOCK COMPRESSOR: IGNORE ROM WRITES */\n\treturn len;\n"
+                      content = content[:brace_idx+1] + injected_code + content[brace_idx+1:]
+                      
+                      with open(zram_path, "w") as f:
+                          f.write(content)
+                      print("✅ Real LZ4 strictly locked. ROM overwrite blocked!")
+          EOF
 
       - name: Purge le9uo commits (MGLRU Preparation)
         run: |
@@ -893,6 +930,6 @@ jobs:
           else
             gh release create "$tag" \
               --title "Templar Kernel GKI $tag" \
-              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS & Full Spoofs. $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --notes "Built with ReSukiSU (Inline/Sentinel), SuSFS, Kyber & Real LZ4. $(date -u '+%Y-%m-%d %H:%M UTC')" \
               "${assets[@]}"
           fi
