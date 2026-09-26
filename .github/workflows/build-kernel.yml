@@ -133,7 +133,7 @@ jobs:
           fi
 
 
-      - name: Apply Real LZ4, Swappiness 40 & Force 'none' Scheduler
+      - name: Apply Real LZ4, Swappiness 40 & Force 'none' Scheduler (Advanced Python Engine)
         run: |
           cd work/common
 
@@ -143,41 +143,201 @@ jobs:
           echo "=== 2. Hardcode Real LZ4 Compressor in Kernel ==="
           echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> arch/arm64/configs/gki_defconfig
           
-          echo "=== 3. Lock ZRAM & I/O Scheduler (C89 Compliant) ==="
+          echo "=== 3. Lock ZRAM & I/O Scheduler (Advanced C-Lexer Engine) ==="
           python3 - << 'EOF'
           import os, re
 
-          # A) Lock ZRAM to LZ4 (Using your zram_drv.txt structure)
+          def replace_c_func_overkill(content, func_regex, new_func_code):
+              match = re.search(func_regex, content)
+              if not match: return content, False
+              
+              start_idx = match.start()
+              brace_start = content.find('{', start_idx)
+              if brace_start == -1: return content, False
+                  
+              NORMAL, IN_STRING, IN_CHAR, IN_LINE_COMMENT, IN_BLOCK_COMMENT = 0, 1, 2, 3, 4
+              state = NORMAL; brace_count = 0; end_idx = -1; i = brace_start; length = len(content)
+              
+              while i < length:
+                  c = content[i]
+                  if state == NORMAL:
+                      if c == '/' and i + 1 < length:
+                          nc = content[i+1]
+                          if nc == '/': state = IN_LINE_COMMENT; i += 1
+                          elif nc == '*': state = IN_BLOCK_COMMENT; i += 1
+                      elif c == '"': state = IN_STRING
+                      elif c == "'": state = IN_CHAR
+                      elif c == '{': brace_count += 1
+                      elif c == '}':
+                          brace_count -= 1
+                          if brace_count == 0:
+                              end_idx = i + 1
+                              break
+                  elif state == IN_STRING:
+                      if c == '\\': i += 1
+                      elif c == '"': state = NORMAL
+                  elif state == IN_CHAR:
+                      if c == '\\': i += 1
+                      elif c == "'": state = NORMAL
+                  elif state == IN_LINE_COMMENT:
+                      if c == '\n': state = NORMAL
+                  elif state == IN_BLOCK_COMMENT:
+                      if c == '*' and i + 1 < length and content[i+1] == '/': state = NORMAL; i += 1
+                  i += 1
+              if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
+              return content, False
+
+          # A) Lock ZRAM to LZ4 permanently using Advanced Engine
           zram_path = "drivers/block/zram/zram_drv.c"
           if os.path.exists(zram_path):
               with open(zram_path, "r") as f: content = f.read()
               
-              # Capture exactly up to "size_t sz;" and inject safely after it
-              pattern = r"(static ssize_t comp_algorithm_store[\s\S]*?size_t sz;)"
-              if re.search(pattern, content):
-                  content = re.sub(pattern, r"\1\n\n\t/* BLOCK ROM ZRAM OVERWRITE */\n\treturn len;", content)
-                  with open(zram_path, "w") as f: f.write(content)
-                  print("✅ ZRAM LZ4 strictly locked.")
+              zram_pattern = r"static\s+ssize_t\s+comp_algorithm_store\([^)]*\)\s*"
+              zram_new_func = """static ssize_t comp_algorithm_store(struct device *dev,
+                                          struct device_attribute *attr,
+                                          const char *buf, size_t len)
+          {
+          \t/* BLOCK ROM ZRAM OVERWRITE - HARDCODED TO LZ4 */
+          \treturn len;
+          }"""
+              new_content, success = replace_c_func_overkill(content, zram_pattern, zram_new_func)
+              if success:
+                  with open(zram_path, "w") as f: f.write(new_content)
+                  print("✅ ZRAM LZ4 strictly locked (Advanced Engine).")
 
-          # B) Lock I/O Scheduler to 'none' globally (Using your elevator.txt structure)
+          # B) Lock I/O Scheduler to 'none' globally
           elv_path = "block/elevator.c"
           if os.path.exists(elv_path):
               with open(elv_path, "r") as f: content = f.read()
               
-              # 1. Block kernel from setting a default during boot (Capture up to "int err;")
-              pattern1 = r"(void elevator_init_mq\(struct request_queue \*q\)[\s\S]*?int err;)"
-              if re.search(pattern1, content):
-                  content = re.sub(pattern1, r"\1\n\n\t/* FORCE 'NONE' SCHEDULER GLOBALLY */\n\treturn;", content)
-                  
-              # 2. Block user-space/ROM from overriding it later (Capture up to "int ret;")
-              pattern2 = r"(ssize_t elv_iosched_store[\s\S]*?int ret;)"
-              if re.search(pattern2, content):
-                  content = re.sub(pattern2, r"\1\n\n\t/* BLOCK ROM SCHEDULER OVERWRITE */\n\treturn count;", content)
-                  
-              with open(elv_path, "w") as f: f.write(content)
-              print("✅ I/O Scheduler globally and strictly locked to 'none'.")
+              # 1. Block kernel from setting a default during boot
+              elv_init_pattern = r"void\s+elevator_init_mq\([^)]*\)\s*"
+              elv_init_new = """void elevator_init_mq(struct request_queue *q)
+          {
+          \t/* FORCE 'NONE' SCHEDULER GLOBALLY - INIT BLOCKED */
+          \treturn;
+          }"""
+              content, s1 = replace_c_func_overkill(content, elv_init_pattern, elv_init_new)
+              
+              # 2. Block user-space/ROM from overriding it later
+              elv_store_pattern = r"ssize_t\s+elv_iosched_store\([^)]*\)\s*"
+              elv_store_new = """ssize_t elv_iosched_store(struct request_queue *q, const char *name, size_t count)
+          {
+          \t/* BLOCK ROM SCHEDULER OVERWRITE */
+          \treturn count;
+          }"""
+              content, s2 = replace_c_func_overkill(content, elv_store_pattern, elv_store_new)
+              
+              if s1 or s2:
+                  with open(elv_path, "w") as f: f.write(content)
+                  print("✅ I/O Scheduler globally locked to 'none' (Advanced Engine).")
           EOF
+
+      - name: Hardcode Schedutil Governor & Tuning (Advanced Python Engine)
+        run: |
+          cd work/common
+
+          echo "=== 1. Lock Schedutil as Default Governor ==="
+          sed -i 's/CONFIG_CPU_FREQ_DEFAULT_GOV_VORPAL=y/# CONFIG_CPU_FREQ_DEFAULT_GOV_VORPAL is not set/g' arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_CPU_FREQ_DEFAULT_GOV_WALT=y/# CONFIG_CPU_FREQ_DEFAULT_GOV_WALT is not set/g' arch/arm64/configs/gki_defconfig
           
+          echo "=== 2. Apply Custom CPU & Scheduler Config Flags ==="
+          cat << 'EOF_SCHED' >> arch/arm64/configs/gki_defconfig
+          CONFIG_ENERGY_MODEL=y
+          CONFIG_CPU_FREQ=y
+          CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+          CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
+          CONFIG_SMP=y
+          CONFIG_SCHED_MC=y
+          CONFIG_SCHED_TOPOLOGY=y
+          CONFIG_CPU_THERMAL=y
+          CONFIG_CGROUPS=y
+          CONFIG_CGROUP_SCHED=y
+          CONFIG_FAIR_GROUP_SCHED=y
+          CONFIG_UCLAMP_TASK=y
+          CONFIG_UCLAMP_TASK_GROUP=y
+          CONFIG_UCLAMP_BUCKETS_COUNT=20
+          CONFIG_CPU_FREQ_THERMAL=y
+          CONFIG_SCHED_CASS=y
+          CONFIG_CASS=y
+          EOF_SCHED
+
+          echo "=== 3. Disable Vendor Schedulers (WALT, PELT, CORE_CTL) ==="
+          sed -i 's/CONFIG_SCHED_WALT=y/# CONFIG_SCHED_WALT is not set/g' arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_PELT_MULTIPLIER=y/# CONFIG_PELT_MULTIPLIER is not set/g' arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_SCHED_CORE_CTL=y/# CONFIG_SCHED_CORE_CTL is not set/g' arch/arm64/configs/gki_defconfig
+
+          echo "=== 4. Advanced Python Engine: Inject Cool & Casual Tuning ==="
+          python3 - << 'EOF'
+          import os, re
+
+          def replace_c_func_overkill(content, func_regex, new_func_code):
+              match = re.search(func_regex, content)
+              if not match: return content, False
+              
+              start_idx = match.start()
+              brace_start = content.find('{', start_idx)
+              if brace_start == -1: return content, False
+                  
+              NORMAL, IN_STRING, IN_CHAR, IN_LINE_COMMENT, IN_BLOCK_COMMENT = 0, 1, 2, 3, 4
+              state = NORMAL; brace_count = 0; end_idx = -1; i = brace_start; length = len(content)
+              
+              while i < length:
+                  c = content[i]
+                  if state == NORMAL:
+                      if c == '/' and i + 1 < length:
+                          nc = content[i+1]
+                          if nc == '/': state = IN_LINE_COMMENT; i += 1
+                          elif nc == '*': state = IN_BLOCK_COMMENT; i += 1
+                      elif c == '"': state = IN_STRING
+                      elif c == "'": state = IN_CHAR
+                      elif c == '{': brace_count += 1
+                      elif c == '}':
+                          brace_count -= 1
+                          if brace_count == 0:
+                              end_idx = i + 1
+                              break
+                  elif state == IN_STRING:
+                      if c == '\\': i += 1
+                      elif c == '"': state = NORMAL
+                  elif state == IN_CHAR:
+                      if c == '\\': i += 1
+                      elif c == "'": state = NORMAL
+                  elif state == IN_LINE_COMMENT:
+                      if c == '\n': state = NORMAL
+                  elif state == IN_BLOCK_COMMENT:
+                      if c == '*' and i + 1 < length and content[i+1] == '/': state = NORMAL; i += 1
+                  i += 1
+              if end_idx != -1: return content[:start_idx] + new_func_code + content[end_idx:], True
+              return content, False
+
+          # A) Block ROM from changing the Governor using Advanced Engine
+          freq_path = "drivers/cpufreq/cpufreq.c"
+          if os.path.exists(freq_path):
+              with open(freq_path, "r") as f: content = f.read()
+              
+              freq_pattern = r"static\s+ssize_t\s+store_scaling_governor\([^)]*\)\s*"
+              freq_new_func = """static ssize_t store_scaling_governor(struct cpufreq_policy *policy, const char *buf, size_t count)
+          {
+          \t/* 🔒 HARD-LOCKED TO SCHEDUTIL: IGNORE ROM WALT OVERWRITES */
+          \treturn count;
+          }"""
+              new_content, success = replace_c_func_overkill(content, freq_pattern, freq_new_func)
+              if success:
+                  with open(freq_path, "w") as f: f.write(new_content)
+                  print("✅ Governor sysfs locked permanently (Advanced Engine).")
+
+          # B) Hardcode Schedutil Rate Limit to 500us
+          su_path = "kernel/sched/cpufreq_schedutil.c"
+          if os.path.exists(su_path):
+              with open(su_path, "r") as f: content = f.read()
+              
+              # Simple string replace is safer here since it's just updating one initialization value
+              if "tunables->rate_limit_us = 2000;" in content:
+                  content = content.replace("tunables->rate_limit_us = 2000;", "tunables->rate_limit_us = 500;")
+                  with open(su_path, "w") as f: f.write(content)
+                  print("✅ Schedutil rate limit hardcoded to 500us.")
+          EOF
           
       - name: Purge le9uo commits (MGLRU Preparation)
         run: |
