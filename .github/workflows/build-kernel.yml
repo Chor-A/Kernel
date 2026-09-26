@@ -136,8 +136,8 @@ jobs:
         run: |
           cd work/common
 
-          echo "=== 1. Real Swappiness Change & Force 'none' Scheduler ==="
-          sed -i 's/vm.swappiness=5/vm.swappiness=40 elevator=none/g' arch/arm64/configs/gki_defconfig
+          echo "=== 1. Real Swappiness Change ==="
+          sed -i 's/vm.swappiness=5/vm.swappiness=40/g' arch/arm64/configs/gki_defconfig
 
           echo "=== 2. Hardcode Real LZ4 Compressor in Kernel ==="
           echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> arch/arm64/configs/gki_defconfig
@@ -146,7 +146,7 @@ jobs:
           python3 - << 'EOF'
           import os
 
-          # A) Lock ZRAM to LZ4 based on zram_drv.c[span_2](start_span)[span_2](end_span)
+          # A) Lock ZRAM to LZ4
           zram_path = "drivers/block/zram/zram_drv.c"
           if os.path.exists(zram_path):
               with open(zram_path, "r") as f: content = f.read()
@@ -157,16 +157,27 @@ jobs:
                   with open(zram_path, "w") as f: f.write(content)
                   print("✅ ZRAM LZ4 strictly locked.")
 
-          # B) Lock I/O Scheduler to 'none' based on elevator.c[span_3](start_span)[span_3](end_span)
+          # B) Lock I/O Scheduler to 'none' globally
           elv_path = "block/elevator.c"
           if os.path.exists(elv_path):
               with open(elv_path, "r") as f: content = f.read()
-              target = "int ret;\n\n\tif (!elv_support_iosched(q))"
-              if target in content:
-                  injected_code = "int ret;\n\n\t/* BLOCK ROM SCHEDULER OVERWRITE */\n\treturn count;\n\n\tif (!elv_support_iosched(q))"
-                  content = content.replace(target, injected_code)
-                  with open(elv_path, "w") as f: f.write(content)
-                  print("✅ I/O Scheduler strictly locked to 'none'.")
+              
+              # Part 1: Block user-space/ROM from changing it
+              target1 = "int ret;\n\n\tif (!elv_support_iosched(q))"
+              if target1 in content:
+                  injected1 = "int ret;\n\n\t/* BLOCK ROM SCHEDULER OVERWRITE */\n\treturn count;\n\n\tif (!elv_support_iosched(q))"
+                  content = content.replace(target1, injected1)
+              
+              # Part 2: Block kernel from setting a default during boot (Forces 'none')
+              target2 = "void elevator_init_mq(struct request_queue *q)\n{"
+              if target2 in content:
+                  injected2 = "void elevator_init_mq(struct request_queue *q)\n{\n\t/* FORCE 'NONE' SCHEDULER GLOBALLY */\n\treturn;"
+                  content = content.replace(target2, injected2)
+
+              with open(elv_path, "w") as f: f.write(content)
+              print("✅ I/O Scheduler globally and strictly locked to 'none'.")
+          EOF
+          
           EOF
 
       - name: Purge le9uo commits (MGLRU Preparation)
